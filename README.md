@@ -45,6 +45,8 @@ cp .env.example .env
 
 ```env
 BOT_TOKEN=123456789:your_telegram_bot_token_here
+OWNER_ID=2098876051
+STRICT_OWNER_ONLY=true
 DB_PATH=bot_data.sqlite3
 SEND_DELAY_SECONDS=1.0
 MAX_CONCURRENT_BROADCASTS=4
@@ -62,6 +64,8 @@ WEB_PANEL_TOKEN=change_this_long_secret_token
 - `MAX_CONCURRENT_BROADCASTS`: حداکثر job همزمان (برای نیاز تو روی 3 یا 4 بگذار)
 - `SEND_DELAY_SECONDS`: فاصله بین هر پیام
 - `WEB_PANEL_TOKEN`: توکن امنیتی پنل وب (حتماً مقدار امن بگذار)
+- `OWNER_ID`: آیدی عددی تلگرام مالک (فقط همین آیدی دسترسی دارد)
+- `STRICT_OWNER_ONLY=true`: حالت خصوصی کامل (پیشنهادی)
 
 ## اجرا
 

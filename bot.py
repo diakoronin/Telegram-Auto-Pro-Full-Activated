@@ -20,6 +20,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.error import TelegramError
 from telegram.ext import (
+    ApplicationHandlerStop,
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -41,6 +42,8 @@ WEB_PANEL_ENABLED = os.getenv("WEB_PANEL_ENABLED", "true").lower() in {"1", "tru
 WEB_PANEL_HOST = os.getenv("WEB_PANEL_HOST", "0.0.0.0")
 WEB_PANEL_PORT = int(os.getenv("WEB_PANEL_PORT", "8080"))
 WEB_PANEL_TOKEN = os.getenv("WEB_PANEL_TOKEN", "").strip()
+OWNER_ID_ENV = os.getenv("OWNER_ID", "").strip()
+STRICT_OWNER_ONLY = os.getenv("STRICT_OWNER_ONLY", "true").lower() in {"1", "true", "yes", "on"}
 SERVICE_NOTIFY_OWNER = os.getenv("SERVICE_NOTIFY_OWNER", "true").lower() in {
     "1",
     "true",
@@ -568,13 +571,39 @@ def get_owner_id(application: Application) -> Optional[int]:
     return get_storage(application).get_owner_id()
 
 
+def parse_owner_id_env() -> Optional[int]:
+    if not OWNER_ID_ENV:
+        return None
+    try:
+        return int(OWNER_ID_ENV)
+    except ValueError:
+        LOGGER.error("OWNER_ID must be an integer. Ignoring invalid OWNER_ID env value.")
+        return None
+
+
+def sync_owner_from_env(storage: Storage) -> Optional[int]:
+    configured_owner = parse_owner_id_env()
+    if configured_owner is None:
+        return None
+    current_owner = storage.get_owner_id()
+    if current_owner != configured_owner:
+        storage.set_owner_id(configured_owner)
+        LOGGER.info("Owner ID synchronized from OWNER_ID env: %s", configured_owner)
+    return configured_owner
+
+
 async def owner_required(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     owner_id = get_owner_id(context.application)
+    configured_owner = context.application.bot_data.get("configured_owner_id")
     user = update.effective_user
     chat = update.effective_chat
 
     if user is None:
         return False
+
+    if configured_owner and owner_id != configured_owner:
+        get_storage(context.application).set_owner_id(configured_owner)
+        owner_id = configured_owner
 
     if owner_id is None:
         if chat and chat.type == ChatType.PRIVATE and update.effective_message:
@@ -587,6 +616,20 @@ async def owner_required(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return False
 
     return True
+
+
+async def strict_owner_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    owner_id = get_owner_id(context.application)
+    user = update.effective_user
+    if not owner_id or not user:
+        return
+    if user.id == owner_id:
+        return
+
+    message = update.effective_message
+    if message and (update.effective_chat and update.effective_chat.type == ChatType.PRIVATE):
+        await message.reply_text("Access denied.")
+    raise ApplicationHandlerStop
 
 
 def build_group_selector(groups: list[GroupItem], selected: set[int]) -> InlineKeyboardMarkup:
@@ -613,6 +656,8 @@ def build_group_selector(groups: list[GroupItem], selected: set[int]) -> InlineK
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if STRICT_OWNER_ONLY and not await owner_required(update, context):
+        return
     if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE:
         await update.effective_message.reply_text(
             "Bot is running.\n"
@@ -624,6 +669,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if STRICT_OWNER_ONLY and not await owner_required(update, context):
+        return
     text = (
         "Commands (private):\n"
         "/claim - set owner (only first time)\n"
@@ -649,6 +696,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if STRICT_OWNER_ONLY and not await owner_required(update, context):
+        return
     user = update.effective_user
     if not user:
         return
@@ -665,6 +714,11 @@ async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     storage = get_storage(context.application)
+    configured_owner = context.application.bot_data.get("configured_owner_id")
+    if configured_owner and user.id != configured_owner:
+        await update.effective_message.reply_text("This bot is private. You are not allowed.")
+        return
+
     current_owner = storage.get_owner_id()
     if current_owner is None:
         storage.set_owner_id(user.id)
@@ -769,6 +823,8 @@ async def removegroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def register_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if STRICT_OWNER_ONLY and not await owner_required(update, context):
+        return
     chat = update.effective_chat
     user = update.effective_user
     if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
@@ -998,6 +1054,17 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if context.user_data.get("awaiting_links"):
         context.user_data["awaiting_links"] = False
         await set_links_from_text(update, context, update.effective_message.text or "")
+
+
+async def enforce_private_owner_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    owner_id = get_owner_id(context.application)
+    user = update.effective_user
+    if not user or owner_id is None or user.id == owner_id:
+        return
+
+    if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE and update.effective_message:
+        await update.effective_message.reply_text("Private bot: access denied.")
+    raise ApplicationHandlerStop
 
 
 async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1372,7 +1439,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     LOGGER.exception("Unhandled error while processing update", exc_info=context.error)
 
 
-def build_application(storage: Storage) -> Application:
+def build_application(storage: Storage, configured_owner_id: Optional[int]) -> Application:
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("BOT_TOKEN environment variable is required.")
@@ -1386,6 +1453,7 @@ def build_application(storage: Storage) -> Application:
     )
     app.bot_data["storage"] = storage
     app.bot_data["manager"] = BroadcastManager(application=app, storage=storage, max_concurrent=MAX_CONCURRENT_BROADCASTS)
+    app.bot_data["configured_owner_id"] = configured_owner_id
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
@@ -1418,13 +1486,14 @@ def main() -> None:
 
     storage = Storage(DB_PATH)
     storage.init()
+    configured_owner_id = sync_owner_from_env(storage)
 
     if WEB_PANEL_ENABLED:
         web_thread = threading.Thread(target=run_web_panel, args=(storage,), daemon=True, name="web-panel")
         web_thread.start()
         LOGGER.info("Web panel started at http://%s:%s", WEB_PANEL_HOST, WEB_PANEL_PORT)
 
-    app = build_application(storage)
+    app = build_application(storage, configured_owner_id=configured_owner_id)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
