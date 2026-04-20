@@ -18,7 +18,10 @@ MAX_CONCURRENT_BROADCASTS="${MAX_CONCURRENT_BROADCASTS:-4}"
 SERVICE_NOTIFY_OWNER="${SERVICE_NOTIFY_OWNER:-true}"
 WEB_PANEL_ENABLED="${WEB_PANEL_ENABLED:-true}"
 WEB_PANEL_HOST="${WEB_PANEL_HOST:-127.0.0.1}"
-WEB_PANEL_PORT="${WEB_PANEL_PORT:-8080}"
+WEB_PANEL_PORT="${WEB_PANEL_PORT:-18080}"
+WEB_PANEL_PATH="${WEB_PANEL_PATH:-}"
+WEB_PANEL_USERNAME="${WEB_PANEL_USERNAME:-}"
+WEB_PANEL_PASSWORD="${WEB_PANEL_PASSWORD:-}"
 UFW_OPEN_PANEL="${UFW_OPEN_PANEL:-false}"
 OWNER_ID="${OWNER_ID:-}"
 STRICT_OWNER_ONLY="${STRICT_OWNER_ONLY:-true}"
@@ -50,17 +53,41 @@ if [[ "$APP_USER" == "root" ]]; then
   echo "Set APP_USER=telegram-sender for safer deployment."
 fi
 
-WEB_PANEL_TOKEN="${WEB_PANEL_TOKEN:-}"
-if [[ -z "$WEB_PANEL_TOKEN" ]]; then
-  if command -v openssl >/dev/null 2>&1; then
-    WEB_PANEL_TOKEN="$(openssl rand -hex 24)"
-  else
-    WEB_PANEL_TOKEN="$(python3 - <<'PY'
-import secrets
-print(secrets.token_hex(24))
-PY
-)"
-  fi
+if [[ -z "$OWNER_ID" ]]; then
+  read -r -p "Enter OWNER_ID (Telegram numeric user id): " OWNER_ID
+fi
+if [[ -z "$OWNER_ID" ]]; then
+  echo "OWNER_ID is required."
+  exit 1
+fi
+
+if [[ -z "$WEB_PANEL_PATH" ]]; then
+  read -r -p "Enter WEB_PANEL_PATH (hidden URL segment, e.g. mypanel-84): " WEB_PANEL_PATH
+fi
+if [[ -z "$WEB_PANEL_PATH" ]]; then
+  echo "WEB_PANEL_PATH is required."
+  exit 1
+fi
+WEB_PANEL_PATH="$(printf "%s" "$WEB_PANEL_PATH" | tr -cd '[:alnum:]_-')"
+if [[ -z "$WEB_PANEL_PATH" ]]; then
+  echo "WEB_PANEL_PATH is invalid. Use only a-z A-Z 0-9 _ -"
+  exit 1
+fi
+
+if [[ -z "$WEB_PANEL_USERNAME" ]]; then
+  read -r -p "Enter WEB_PANEL_USERNAME: " WEB_PANEL_USERNAME
+fi
+if [[ -z "$WEB_PANEL_USERNAME" ]]; then
+  echo "WEB_PANEL_USERNAME is required."
+  exit 1
+fi
+if [[ -z "$WEB_PANEL_PASSWORD" ]]; then
+  read -r -s -p "Enter WEB_PANEL_PASSWORD: " WEB_PANEL_PASSWORD
+  echo
+fi
+if [[ -z "$WEB_PANEL_PASSWORD" ]]; then
+  echo "WEB_PANEL_PASSWORD is required."
+  exit 1
 fi
 
 echo "[1/8] Installing prerequisites..."
@@ -95,7 +122,9 @@ SERVICE_NOTIFY_OWNER=$SERVICE_NOTIFY_OWNER
 WEB_PANEL_ENABLED=$WEB_PANEL_ENABLED
 WEB_PANEL_HOST=$WEB_PANEL_HOST
 WEB_PANEL_PORT=$WEB_PANEL_PORT
-WEB_PANEL_TOKEN=$WEB_PANEL_TOKEN
+WEB_PANEL_PATH=$WEB_PANEL_PATH
+WEB_PANEL_USERNAME=$WEB_PANEL_USERNAME
+WEB_PANEL_PASSWORD=$WEB_PANEL_PASSWORD
 OWNER_ID=$OWNER_ID
 STRICT_OWNER_ONLY=$STRICT_OWNER_ONLY
 EOF
@@ -146,7 +175,9 @@ echo "Logs:     sudo journalctl -u $SERVICE_NAME -f"
 echo
 echo "Web panel:"
 if [[ "$WEB_PANEL_ENABLED" == "true" ]]; then
-  echo "  http://<SERVER_IP>:$WEB_PANEL_PORT/?token=$WEB_PANEL_TOKEN"
+  echo "  URL:      http://<SERVER_IP>:$WEB_PANEL_PORT/$WEB_PANEL_PATH/login"
+  echo "  Username: $WEB_PANEL_USERNAME"
+  echo "  Password: (the one you entered)"
 else
   echo "  disabled (WEB_PANEL_ENABLED=false)"
 fi

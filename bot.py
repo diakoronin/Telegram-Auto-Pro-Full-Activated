@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hmac
 import json
 import logging
 import os
@@ -13,8 +16,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Awaitable, Callable, Optional
+from urllib.parse import quote_plus
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus, ChatType
@@ -40,8 +44,12 @@ SCHEDULER_POLL_SECONDS = max(float(os.getenv("SCHEDULER_POLL_SECONDS", "5.0")), 
 MAX_CONCURRENT_BROADCASTS = max(int(os.getenv("MAX_CONCURRENT_BROADCASTS", "4")), 1)
 WEB_PANEL_ENABLED = os.getenv("WEB_PANEL_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 WEB_PANEL_HOST = os.getenv("WEB_PANEL_HOST", "0.0.0.0")
-WEB_PANEL_PORT = int(os.getenv("WEB_PANEL_PORT", "8080"))
-WEB_PANEL_TOKEN = os.getenv("WEB_PANEL_TOKEN", "").strip()
+WEB_PANEL_PORT = int(os.getenv("WEB_PANEL_PORT", "18080"))
+WEB_PANEL_PATH = os.getenv("WEB_PANEL_PATH", "panel").strip().strip("/")
+WEB_PANEL_USERNAME = os.getenv("WEB_PANEL_USERNAME", "admin").strip()
+WEB_PANEL_PASSWORD = os.getenv("WEB_PANEL_PASSWORD", "").strip()
+WEB_PANEL_REQUIRE_LOGIN = bool(WEB_PANEL_USERNAME and WEB_PANEL_PASSWORD)
+WEB_PANEL_SESSION_SECRET = os.getenv("WEB_PANEL_SESSION_SECRET", "").strip()
 OWNER_ID_ENV = os.getenv("OWNER_ID", "").strip()
 STRICT_OWNER_ONLY = os.getenv("STRICT_OWNER_ONLY", "true").lower() in {"1", "true", "yes", "on"}
 SERVICE_NOTIFY_OWNER = os.getenv("SERVICE_NOTIFY_OWNER", "true").lower() in {
@@ -51,6 +59,7 @@ SERVICE_NOTIFY_OWNER = os.getenv("SERVICE_NOTIFY_OWNER", "true").lower() in {
     "on",
 }
 LINK_PATTERN = re.compile(r"^https?://\S+$", re.IGNORECASE)
+WEB_PANEL_PATH = re.sub(r"[^a-zA-Z0-9_-]", "", WEB_PANEL_PATH) or "panel"
 
 
 @dataclass
@@ -504,7 +513,7 @@ class BroadcastManager:
                 if owner_chat_id:
                     await self.application.bot.send_message(
                         chat_id=owner_chat_id,
-                        text=f"Job started: {title}\nKey: {key}",
+                        text=f"شروع ارسال: {title}\nشناسه کار: {key}",
                     )
                 group_index = 0
                 for group_id in group_ids:
@@ -521,7 +530,7 @@ class BroadcastManager:
                     if owner_chat_id:
                         await self.application.bot.send_message(
                             chat_id=owner_chat_id,
-                            text=f"{title}: group {group_index}/{len(group_ids)} finished ({group_id})",
+                            text=f"{title}: گروه {group_index}/{len(group_ids)} تمام شد ({group_id})",
                         )
         except asyncio.CancelledError:
             result.stopped = True
@@ -532,22 +541,22 @@ class BroadcastManager:
         finally:
             if owner_chat_id:
                 summary = (
-                    f"Job finished: {title}\n"
-                    f"Key: {key}\n"
-                    f"Success: {result.sent_ok}\n"
-                    f"Failed: {result.sent_fail}\n"
-                    f"Total: {result.total}"
+                    f"ارسال تمام شد: {title}\n"
+                    f"شناسه کار: {key}\n"
+                    f"موفق: {result.sent_ok}\n"
+                    f"ناموفق: {result.sent_fail}\n"
+                    f"کل: {result.total}"
                 )
                 if result.stopped:
-                    summary += "\nStatus: stopped"
+                    summary += "\nوضعیت: متوقف شد"
                 if result.error:
-                    summary += f"\nError: {result.error}"
+                    summary += f"\nخطا: {result.error}"
                 if result.failures:
-                    summary += "\nFirst failures:\n" + "\n".join(result.failures[:8])
+                    summary += "\nچند خطای اول:\n" + "\n".join(result.failures[:8])
                 try:
                     await self.application.bot.send_message(chat_id=owner_chat_id, text=summary)
                 except TelegramError:
-                    LOGGER.warning("Could not send summary to owner chat %s", owner_chat_id)
+                    LOGGER.warning("ارسال گزارش نهایی به مالک ناموفق بود: %s", owner_chat_id)
 
             if on_finish:
                 try:
@@ -607,49 +616,35 @@ async def owner_required(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if owner_id is None:
         if chat and chat.type == ChatType.PRIVATE and update.effective_message:
-            await update.effective_message.reply_text("Owner is not set yet. Send /claim in private chat first.")
+            await update.effective_message.reply_text("مالک هنوز تنظیم نشده است. ابتدا در پی‌وی /claim را بزن.")
         return False
 
     if user.id != owner_id:
         if chat and chat.type == ChatType.PRIVATE and update.effective_message:
-            await update.effective_message.reply_text("Only owner can run this command.")
+            await update.effective_message.reply_text("فقط مالک ربات اجازه اجرای این دستور را دارد.")
         return False
 
     return True
-
-
-async def strict_owner_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    owner_id = get_owner_id(context.application)
-    user = update.effective_user
-    if not owner_id or not user:
-        return
-    if user.id == owner_id:
-        return
-
-    message = update.effective_message
-    if message and (update.effective_chat and update.effective_chat.type == ChatType.PRIVATE):
-        await message.reply_text("Access denied.")
-    raise ApplicationHandlerStop
 
 
 def build_group_selector(groups: list[GroupItem], selected: set[int]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for group in groups:
         checked = "✅" if group.chat_id in selected else "⬜"
-        admin_mark = "admin" if group.is_admin else "not-admin"
+        admin_mark = "ادمین" if group.is_admin else "غیرادمین"
         label = f"{checked} {group.title} ({admin_mark})"
         rows.append([InlineKeyboardButton(label[:64], callback_data=f"sel:toggle:{group.chat_id}")])
 
     rows.append(
         [
-            InlineKeyboardButton("Select all", callback_data="sel:all"),
-            InlineKeyboardButton("Clear", callback_data="sel:none"),
+            InlineKeyboardButton("انتخاب همه", callback_data="sel:all"),
+            InlineKeyboardButton("پاک کردن", callback_data="sel:none"),
         ]
     )
     rows.append(
         [
-            InlineKeyboardButton("Start send", callback_data="sel:send"),
-            InlineKeyboardButton("Cancel", callback_data="sel:cancel"),
+            InlineKeyboardButton("شروع ارسال", callback_data="sel:send"),
+            InlineKeyboardButton("لغو", callback_data="sel:cancel"),
         ]
     )
     return InlineKeyboardMarkup(rows)
@@ -660,37 +655,37 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE:
         await update.effective_message.reply_text(
-            "Bot is running.\n"
-            "Use /help to see commands.\n"
-            "Use /whoami to get your Telegram user ID."
+            "ربات فعال است.\n"
+            "برای دیدن دستورات از /help استفاده کن.\n"
+            "برای دیدن آیدی خودت از /whoami استفاده کن."
         )
         return
-    await update.effective_message.reply_text("Use /register in this group after adding and promoting the bot.")
+    await update.effective_message.reply_text("بعد از افزودن و ادمین کردن ربات، در همین گروه /register بزن.")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if STRICT_OWNER_ONLY and not await owner_required(update, context):
         return
     text = (
-        "Commands (private):\n"
-        "/claim - set owner (only first time)\n"
-        "/whoami - show your user ID\n"
-        "/setlinks - paste links one per line\n"
-        "/links - show saved links\n"
-        "/groups - show saved groups\n"
-        "/addgroup <chat_id> <title> - add group manually\n"
-        "/removegroup <chat_id> - mark group inactive\n"
-        "/refreshadmins - re-check admin status in groups\n"
-        "/sendlinks - choose groups and broadcast links\n"
-        "/services - list scheduled services\n"
-        "/runsvc <id> - schedule one service immediately\n"
-        "/enablesvc <id> - enable service\n"
-        "/disablesvc <id> - disable service\n"
-        "/jobs - list active jobs\n"
-        "/stop - stop all active jobs\n"
-        "/cancel - cancel pending text input\n\n"
-        "Group command:\n"
-        "/register - save this group into bot list"
+        "دستورات خصوصی:\n"
+        "/claim - ثبت مالک (فقط بار اول)\n"
+        "/whoami - نمایش آیدی تلگرام شما\n"
+        "/setlinks - ثبت لینک‌ها (هر خط یک لینک)\n"
+        "/links - نمایش لینک‌های ذخیره‌شده\n"
+        "/groups - نمایش گروه‌های ذخیره‌شده\n"
+        "/addgroup <chat_id> <title> - افزودن دستی گروه\n"
+        "/removegroup <chat_id> - غیرفعال کردن گروه\n"
+        "/refreshadmins - بروزرسانی وضعیت ادمین بودن ربات\n"
+        "/sendlinks - انتخاب گروه‌ها و ارسال لینک‌ها\n"
+        "/services - نمایش سرویس‌های زمان‌بندی‌شده\n"
+        "/runsvc <id> - اجرای فوری یک سرویس\n"
+        "/enablesvc <id> - فعال‌سازی سرویس\n"
+        "/disablesvc <id> - غیرفعال‌سازی سرویس\n"
+        "/jobs - نمایش کارهای در حال اجرا\n"
+        "/stop - توقف همه کارهای فعال\n"
+        "/cancel - لغو حالت انتظار\n\n"
+        "دستور گروه:\n"
+        "/register - ثبت همین گروه در لیست"
     )
     await update.effective_message.reply_text(text)
 
@@ -701,14 +696,14 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     if not user:
         return
-    await update.effective_message.reply_text(f"Your user ID: {user.id}")
+    await update.effective_message.reply_text(f"آیدی عددی شما: {user.id}")
 
 
 async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     user = update.effective_user
     if not chat or chat.type != ChatType.PRIVATE:
-        await update.effective_message.reply_text("Run this command in private chat.")
+        await update.effective_message.reply_text("این دستور را در پی‌وی ربات اجرا کن.")
         return
     if not user:
         return
@@ -716,18 +711,18 @@ async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     storage = get_storage(context.application)
     configured_owner = context.application.bot_data.get("configured_owner_id")
     if configured_owner and user.id != configured_owner:
-        await update.effective_message.reply_text("This bot is private. You are not allowed.")
+        await update.effective_message.reply_text("این ربات خصوصی است و شما دسترسی ندارید.")
         return
 
     current_owner = storage.get_owner_id()
     if current_owner is None:
         storage.set_owner_id(user.id)
-        await update.effective_message.reply_text(f"Owner set to user id: {user.id}")
+        await update.effective_message.reply_text(f"مالک روی آیدی {user.id} ثبت شد.")
         return
     if current_owner == user.id:
-        await update.effective_message.reply_text("You are already owner.")
+        await update.effective_message.reply_text("شما از قبل مالک هستید.")
         return
-    await update.effective_message.reply_text("Owner already set. You are not allowed.")
+    await update.effective_message.reply_text("مالک قبلا ثبت شده و شما دسترسی ندارید.")
 
 
 async def set_links_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_text: str) -> None:
@@ -735,16 +730,16 @@ async def set_links_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if invalid_lines:
         invalid_preview = "\n".join(invalid_lines[:10])
         await update.effective_message.reply_text(
-            "Invalid lines detected. Only http/https links are accepted.\n" f"{invalid_preview}"
+            "چند خط نامعتبر شناسایی شد. فقط لینک‌های http/https مجاز هستند.\n" f"{invalid_preview}"
         )
         return
     if not links:
-        await update.effective_message.reply_text("No valid links found.")
+        await update.effective_message.reply_text("هیچ لینک معتبری پیدا نشد.")
         return
 
     storage = get_storage(context.application)
     storage.replace_links(links)
-    await update.effective_message.reply_text(f"{len(links)} links saved successfully.")
+    await update.effective_message.reply_text(f"{len(links)} لینک با موفقیت ذخیره شد.")
 
 
 async def setlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -756,7 +751,7 @@ async def setlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     context.user_data["awaiting_links"] = True
     await update.effective_message.reply_text(
-        "Send links now, one per line.\nExample:\nhttps://t.me/channel1\nhttps://t.me/channel2"
+        "الان لینک‌ها را بفرست (هر خط یک لینک).\nمثال:\nhttps://t.me/channel1\nhttps://t.me/channel2"
     )
 
 
@@ -765,10 +760,10 @@ async def links_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     links = get_storage(context.application).list_links()
     if not links:
-        await update.effective_message.reply_text("No links saved yet.")
+        await update.effective_message.reply_text("هنوز لینکی ذخیره نشده.")
         return
     lines = [f"{index + 1}. {link}" for index, link in enumerate(links)]
-    await update.effective_message.reply_text("Saved links:\n" + "\n".join(lines))
+    await update.effective_message.reply_text("لینک‌های ذخیره‌شده:\n" + "\n".join(lines))
 
 
 async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -776,14 +771,14 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     groups = get_storage(context.application).list_groups()
     if not groups:
-        await update.effective_message.reply_text("No groups saved yet.")
+        await update.effective_message.reply_text("هنوز گروهی ذخیره نشده.")
         return
     lines = []
     for index, group in enumerate(groups, start=1):
-        status = "active" if group.is_active else "inactive"
-        admin = "admin" if group.is_admin else "not-admin"
+        status = "فعال" if group.is_active else "غیرفعال"
+        admin = "ادمین" if group.is_admin else "غیرادمین"
         lines.append(f"{index}. {group.title} | {group.chat_id} | {status} | {admin}")
-    await update.effective_message.reply_text("Saved groups:\n" + "\n".join(lines))
+    await update.effective_message.reply_text("گروه‌های ذخیره‌شده:\n" + "\n".join(lines))
 
 
 async def addgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -791,19 +786,19 @@ async def addgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     parts = (update.effective_message.text or "").split(maxsplit=2)
     if len(parts) < 3:
-        await update.effective_message.reply_text("Usage: /addgroup <chat_id> <title>")
+        await update.effective_message.reply_text("نحوه استفاده: /addgroup <chat_id> <title>")
         return
     try:
         chat_id = int(parts[1])
     except ValueError:
-        await update.effective_message.reply_text("chat_id must be an integer.")
+        await update.effective_message.reply_text("شناسه chat_id باید عدد صحیح باشد.")
         return
     title = parts[2].strip()
     if not title:
-        await update.effective_message.reply_text("Group title cannot be empty.")
+        await update.effective_message.reply_text("عنوان گروه نمی‌تواند خالی باشد.")
         return
     get_storage(context.application).upsert_group(chat_id=chat_id, title=title, is_active=True, is_admin=False)
-    await update.effective_message.reply_text("Group saved.")
+    await update.effective_message.reply_text("گروه ذخیره شد.")
 
 
 async def removegroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -811,15 +806,15 @@ async def removegroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     parts = (update.effective_message.text or "").split(maxsplit=1)
     if len(parts) < 2:
-        await update.effective_message.reply_text("Usage: /removegroup <chat_id>")
+        await update.effective_message.reply_text("نحوه استفاده: /removegroup <chat_id>")
         return
     try:
         chat_id = int(parts[1])
     except ValueError:
-        await update.effective_message.reply_text("chat_id must be an integer.")
+        await update.effective_message.reply_text("شناسه chat_id باید عدد صحیح باشد.")
         return
     get_storage(context.application).set_group_active(chat_id, is_active=False)
-    await update.effective_message.reply_text("Group marked as inactive.")
+    await update.effective_message.reply_text("گروه غیرفعال شد.")
 
 
 async def register_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -828,14 +823,14 @@ async def register_group_command(update: Update, context: ContextTypes.DEFAULT_T
     chat = update.effective_chat
     user = update.effective_user
     if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
-        await update.effective_message.reply_text("Use this command in a group.")
+        await update.effective_message.reply_text("این دستور باید داخل گروه اجرا شود.")
         return
     if not user:
         return
     try:
         member = await context.bot.get_chat_member(chat.id, user.id)
         if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-            await update.effective_message.reply_text("Only group admins can register this group.")
+            await update.effective_message.reply_text("فقط ادمین‌های گروه می‌توانند این گروه را ثبت کنند.")
             return
         bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
         is_bot_admin = bot_member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
@@ -845,9 +840,9 @@ async def register_group_command(update: Update, context: ContextTypes.DEFAULT_T
             is_active=True,
             is_admin=is_bot_admin,
         )
-        await update.effective_message.reply_text("Group registered.")
+        await update.effective_message.reply_text("گروه ثبت شد.")
     except TelegramError as exc:
-        await update.effective_message.reply_text(f"Register failed: {exc}")
+        await update.effective_message.reply_text(f"ثبت گروه ناموفق بود: {exc}")
 
 
 async def refresh_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -856,7 +851,7 @@ async def refresh_admins_command(update: Update, context: ContextTypes.DEFAULT_T
     storage = get_storage(context.application)
     groups = storage.list_groups(only_active=True)
     if not groups:
-        await update.effective_message.reply_text("No active groups to refresh.")
+        await update.effective_message.reply_text("گروه فعال برای بررسی وجود ندارد.")
         return
 
     updated_count = 0
@@ -868,7 +863,9 @@ async def refresh_admins_command(update: Update, context: ContextTypes.DEFAULT_T
             updated_count += 1
         except TelegramError:
             storage.set_group_active(group.chat_id, is_active=False)
-    await update.effective_message.reply_text(f"Checked {len(groups)} groups. Refreshed: {updated_count}.")
+    await update.effective_message.reply_text(
+        f"{len(groups)} گروه بررسی شد. وضعیت {updated_count} گروه بروزرسانی شد."
+    )
 
 
 async def sendlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -877,16 +874,16 @@ async def sendlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     storage = get_storage(context.application)
     groups = storage.list_groups(only_active=True)
     if not groups:
-        await update.effective_message.reply_text("No active groups available.")
+        await update.effective_message.reply_text("هیچ گروه فعالی موجود نیست.")
         return
     links = storage.list_links()
     if not links:
-        await update.effective_message.reply_text("No links saved. Use /setlinks first.")
+        await update.effective_message.reply_text("لینکی ذخیره نشده. اول /setlinks بزن.")
         return
     selected = {group.chat_id for group in groups}
     context.user_data["selected_groups"] = selected
     await update.effective_message.reply_text(
-        f"Choose target groups ({len(selected)}/{len(groups)} selected):",
+        f"گروه‌های هدف را انتخاب کن ({len(selected)}/{len(groups)} انتخاب شده):",
         reply_markup=build_group_selector(groups, selected),
     )
 
@@ -896,7 +893,7 @@ async def selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not query or not query.data:
         return
     if not await owner_required(update, context):
-        await query.answer("Unauthorized", show_alert=True)
+        await query.answer("شما دسترسی ندارید", show_alert=True)
         return
 
     storage = get_storage(context.application)
@@ -914,15 +911,15 @@ async def selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         selected = set()
     elif data == "sel:cancel":
         context.user_data.pop("selected_groups", None)
-        await query.edit_message_text("Selection canceled.")
+        await query.edit_message_text("انتخاب لغو شد.")
         return
     elif data == "sel:send":
         if not selected:
-            await query.answer("No groups selected.", show_alert=True)
+            await query.answer("هیچ گروهی انتخاب نشده.", show_alert=True)
             return
         links = storage.list_links()
         if not links:
-            await query.answer("No links saved.", show_alert=True)
+            await query.answer("هیچ لینکی ذخیره نشده.", show_alert=True)
             return
         manager = get_manager(context.application)
         owner_chat_id = update.effective_chat.id if update.effective_chat else None
@@ -935,29 +932,29 @@ async def selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             title="manual-broadcast",
         )
         if not started:
-            await query.answer("Could not start job", show_alert=True)
+            await query.answer("شروع ارسال ناموفق بود", show_alert=True)
             return
         await query.edit_message_text(
-            f"Manual job queued.\nKey: {key}\nGroups: {len(selected)}\nLinks: {len(links)}"
+            f"ارسال دستی در صف اجرا قرار گرفت.\nشناسه: {key}\nتعداد گروه: {len(selected)}\nتعداد لینک: {len(links)}"
         )
         return
     elif data.startswith("sel:toggle:"):
         try:
             chat_id = int(data.split(":")[2])
         except (IndexError, ValueError):
-            await query.answer("Invalid selection")
+            await query.answer("انتخاب نامعتبر")
             return
         if chat_id in selected:
             selected.remove(chat_id)
         else:
             selected.add(chat_id)
     else:
-        await query.answer("Unknown action")
+        await query.answer("عملیات نامشخص")
         return
 
     context.user_data["selected_groups"] = selected
     await query.edit_message_text(
-        f"Choose target groups ({len(selected)}/{len(groups)} selected):",
+        f"گروه‌های هدف را انتخاب کن ({len(selected)}/{len(groups)} انتخاب شده):",
         reply_markup=build_group_selector(groups, selected),
     )
 
@@ -967,18 +964,18 @@ async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     services = get_storage(context.application).list_services()
     if not services:
-        await update.effective_message.reply_text("No services found.")
+        await update.effective_message.reply_text("هیچ سرویسی تعریف نشده.")
         return
     lines = []
     for service in services:
-        state = "enabled" if service.is_enabled else "disabled"
+        state = "فعال" if service.is_enabled else "غیرفعال"
         next_run = dt_to_str(service.next_run_at)
         last_run = dt_to_str(service.last_run_at) if service.last_run_at else "-"
         lines.append(
-            f"{service.id}. {service.name} | every {service.interval_minutes}m | "
-            f"{state} | next:{next_run} | last:{last_run}"
+            f"{service.id}. {service.name} | هر {service.interval_minutes} دقیقه | "
+            f"{state} | اجرای بعدی: {next_run} | آخرین اجرا: {last_run}"
         )
-    await update.effective_message.reply_text("Services:\n" + "\n".join(lines))
+    await update.effective_message.reply_text("سرویس‌ها:\n" + "\n".join(lines))
 
 
 async def _service_control(update: Update, context: ContextTypes.DEFAULT_TYPE, enable: Optional[bool]) -> None:
@@ -987,29 +984,29 @@ async def _service_control(update: Update, context: ContextTypes.DEFAULT_TYPE, e
     parts = (update.effective_message.text or "").split(maxsplit=1)
     if len(parts) < 2:
         usage = "/runsvc <id>" if enable is None else ("/enablesvc <id>" if enable else "/disablesvc <id>")
-        await update.effective_message.reply_text(f"Usage: {usage}")
+        await update.effective_message.reply_text(f"نحوه استفاده: {usage}")
         return
     try:
         service_id = int(parts[1].strip())
     except ValueError:
-        await update.effective_message.reply_text("Service id must be integer.")
+        await update.effective_message.reply_text("شناسه سرویس باید عدد صحیح باشد.")
         return
 
     storage = get_storage(context.application)
     service = storage.get_service(service_id)
     if not service:
-        await update.effective_message.reply_text("Service not found.")
+        await update.effective_message.reply_text("سرویس پیدا نشد.")
         return
 
     if enable is None:
         storage.schedule_service_now(service_id)
-        await update.effective_message.reply_text("Service scheduled to run now.")
+        await update.effective_message.reply_text("سرویس برای اجرای فوری زمان‌بندی شد.")
     else:
         storage.set_service_enabled(service_id, enable)
         if enable:
             storage.schedule_service_now(service_id)
-        state = "enabled" if enable else "disabled"
-        await update.effective_message.reply_text(f"Service {state}.")
+        state = "فعال شد" if enable else "غیرفعال شد"
+        await update.effective_message.reply_text(f"سرویس {state}.")
 
 
 async def runsvc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1029,21 +1026,21 @@ async def jobs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     running = get_manager(context.application).running_keys()
     if not running:
-        await update.effective_message.reply_text("No active jobs.")
+        await update.effective_message.reply_text("در حال حاضر کاری در حال اجرا نیست.")
         return
-    await update.effective_message.reply_text("Active jobs:\n" + "\n".join(f"- {key}" for key in running))
+    await update.effective_message.reply_text("کارهای در حال اجرا:\n" + "\n".join(f"- {key}" for key in running))
 
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await owner_required(update, context):
         return
     cancelled = await get_manager(context.application).cancel_all()
-    await update.effective_message.reply_text(f"Stop signal sent to {cancelled} job(s).")
+    await update.effective_message.reply_text(f"دستور توقف برای {cancelled} کار ارسال شد.")
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("awaiting_links", None)
-    await update.effective_message.reply_text("Canceled.")
+    await update.effective_message.reply_text("لغو شد.")
 
 
 async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1054,17 +1051,6 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if context.user_data.get("awaiting_links"):
         context.user_data["awaiting_links"] = False
         await set_links_from_text(update, context, update.effective_message.text or "")
-
-
-async def enforce_private_owner_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    owner_id = get_owner_id(context.application)
-    user = update.effective_user
-    if not user or owner_id is None or user.id == owner_id:
-        return
-
-    if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE and update.effective_message:
-        await update.effective_message.reply_text("Private bot: access denied.")
-    raise ApplicationHandlerStop
 
 
 async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1143,31 +1129,71 @@ async def post_shutdown(application: Application) -> None:
 
 
 def create_web_app(storage: Storage) -> FastAPI:
-    app = FastAPI(title="Telegram Sender Web Panel")
+    app = FastAPI(title="پنل مدیریت ربات تلگرام")
+    panel_prefix = "/" + WEB_PANEL_PATH
+    panel_sessions: set[str] = set()
 
-    def _validate_token(request: Request) -> str:
-        if not WEB_PANEL_TOKEN:
-            return ""
-        supplied = request.query_params.get("token") or request.headers.get("x-panel-token", "")
-        if supplied != WEB_PANEL_TOKEN:
-            raise HTTPException(status_code=401, detail="Invalid panel token")
-        return supplied
+    def _panel_url(path: str = "", message: str = "") -> str:
+        base = f"{panel_prefix}{path}"
+        if message:
+            return f"{base}?msg={quote_plus(message)}"
+        return base
 
-    def _render_page(token: str, message: str = "") -> str:
+    def _is_authenticated(request: Request) -> bool:
+        if not WEB_PANEL_REQUIRE_LOGIN:
+            return True
+        session_id = request.cookies.get("panel_session", "")
+        return bool(session_id and session_id in panel_sessions)
+
+    async def _require_auth(request: Request) -> Optional[RedirectResponse]:
+        if _is_authenticated(request):
+            return None
+        return RedirectResponse(url=_panel_url("/login", "لطفا وارد شوید"), status_code=303)
+
+    def _render_login_page(message: str = "") -> str:
+        message_html = f"<p style='color:#b22;'>{escape(message)}</p>" if message else ""
+        return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ورود پنل ربات</title>
+  <style>
+    body {{ font-family: Tahoma, Arial, sans-serif; max-width: 420px; margin: 48px auto; }}
+    .card {{ border: 1px solid #ddd; border-radius: 10px; padding: 16px; }}
+    input {{ width: 100%; padding: 8px; margin: 4px 0 10px 0; box-sizing: border-box; }}
+    button {{ padding: 8px 14px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h3>ورود به پنل مدیریت</h3>
+    {message_html}
+    <form method="post" action="{panel_prefix}/login">
+      <label>نام کاربری</label>
+      <input type="text" name="username" required />
+      <label>رمز عبور</label>
+      <input type="password" name="password" required />
+      <button type="submit">ورود</button>
+    </form>
+  </div>
+</body>
+</html>
+"""
+
+    def _render_page(message: str = "") -> str:
         groups = storage.list_groups()
         links = storage.list_links()
         services = storage.list_services()
-        token_suffix = f"?token={escape(token)}" if token else ""
-        token_input = f'<input type="hidden" name="token" value="{escape(token)}" />' if token else ""
 
         group_rows = "".join(
             f"<tr><td>{escape(g.title)}</td><td>{g.chat_id}</td>"
-            f"<td>{'active' if g.is_active else 'inactive'}</td>"
-            f"<td>{'admin' if g.is_admin else 'not-admin'}</td></tr>"
+            f"<td>{'فعال' if g.is_active else 'غیرفعال'}</td>"
+            f"<td>{'ادمین' if g.is_admin else 'غیرادمین'}</td></tr>"
             for g in groups
         )
         if not group_rows:
-            group_rows = "<tr><td colspan='4'>No groups</td></tr>"
+            group_rows = "<tr><td colspan='4'>گروهی ثبت نشده است</td></tr>"
 
         links_text = "\n".join(links)
         group_checkbox = "".join(
@@ -1179,16 +1205,16 @@ def create_web_app(storage: Storage) -> FastAPI:
             if g.is_active
         )
         if not group_checkbox:
-            group_checkbox = "<p>No active groups available.</p>"
+            group_checkbox = "<p>هیچ گروه فعالی وجود ندارد.</p>"
 
         service_rows = ""
         for svc in services:
-            state = "enabled" if svc.is_enabled else "disabled"
+            state = "فعال" if svc.is_enabled else "غیرفعال"
             service_rows += (
                 "<tr>"
                 f"<td>{svc.id}</td>"
                 f"<td>{escape(svc.name)}</td>"
-                f"<td>{svc.interval_minutes}m</td>"
+                f"<td>{svc.interval_minutes} دقیقه</td>"
                 f"<td>{state}</td>"
                 f"<td>{dt_to_str(svc.next_run_at)}</td>"
                 f"<td>{dt_to_str(svc.last_run_at) if svc.last_run_at else '-'}</td>"
@@ -1196,23 +1222,23 @@ def create_web_app(storage: Storage) -> FastAPI:
                 f"<td>{len(svc.group_ids)}</td>"
                 f"<td>{len(svc.links)}</td>"
                 "<td>"
-                f"<form method='post' action='/services/{svc.id}/run{token_suffix}' style='display:inline;'>"
-                f"{token_input}<button type='submit'>Run now</button></form> "
-                f"<form method='post' action='/services/{svc.id}/toggle{token_suffix}' style='display:inline;'>"
-                f"{token_input}<button type='submit'>{'Disable' if svc.is_enabled else 'Enable'}</button></form> "
-                f"<form method='post' action='/services/{svc.id}/delete{token_suffix}' style='display:inline;'>"
-                f"{token_input}<button type='submit'>Delete</button></form>"
+                f"<form method='post' action='{panel_prefix}/services/{svc.id}/run' style='display:inline;'>"
+                "<button type='submit'>اجرای فوری</button></form> "
+                f"<form method='post' action='{panel_prefix}/services/{svc.id}/toggle' style='display:inline;'>"
+                f"<button type='submit'>{'غیرفعال' if svc.is_enabled else 'فعال'}</button></form> "
+                f"<form method='post' action='{panel_prefix}/services/{svc.id}/delete' style='display:inline;'>"
+                "<button type='submit'>حذف</button></form>"
                 "</td>"
                 "</tr>"
             )
         if not service_rows:
-            service_rows = "<tr><td colspan='10'>No services</td></tr>"
+            service_rows = "<tr><td colspan='10'>سرویسی ثبت نشده است</td></tr>"
 
         message_html = f"<p style='color:#0a6'>{escape(message)}</p>" if message else ""
-        warning = (
-            "<p style='color:#a33;'>WARNING: WEB_PANEL_TOKEN is empty. Panel is open without auth.</p>"
-            if not WEB_PANEL_TOKEN
-            else ""
+        auth_status = (
+            f"<p style='color:#0a6;'>ورود با نام کاربری فعال است: {escape(WEB_PANEL_USERNAME)}</p>"
+            if WEB_PANEL_REQUIRE_LOGIN
+            else "<p style='color:#b22;'>هشدار: پنل بدون لاگین اجرا شده است.</p>"
         )
 
         return f"""
@@ -1220,77 +1246,75 @@ def create_web_app(storage: Storage) -> FastAPI:
 <html>
 <head>
     <meta charset="utf-8" />
-    <title>Telegram Sender Panel</title>
+    <title>پنل مدیریت ربات</title>
     <style>
-      body {{ font-family: Arial, sans-serif; margin: 20px; }}
+      body {{ font-family: Tahoma, Arial, sans-serif; margin: 20px; }}
       textarea {{ width: 100%; min-height: 120px; }}
       table {{ border-collapse: collapse; width: 100%; margin-top: 8px; }}
-      th, td {{ border: 1px solid #ddd; padding: 6px; text-align: left; }}
+      th, td {{ border: 1px solid #ddd; padding: 6px; text-align: right; }}
       .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 16px; }}
       .group-box {{ max-height: 220px; overflow-y: auto; border: 1px solid #ddd; padding: 8px; }}
     </style>
 </head>
 <body>
-    <h2>Telegram Sender Web Panel</h2>
-    {warning}
+    <h2>پنل مدیریت ربات تلگرام</h2>
+    {auth_status}
     {message_html}
+    <p><a href="{panel_prefix}/logout">خروج از پنل</a></p>
 
     <div class="card">
-      <h3>Groups</h3>
-      <form method="post" action="/groups/add{token_suffix}">
-        {token_input}
-        <label>Chat ID</label><br />
+      <h3>گروه‌ها</h3>
+      <form method="post" action="{panel_prefix}/groups/add">
+        <label>شناسه گروه (chat_id)</label><br />
         <input type="text" name="chat_id" required />
         <br />
-        <label>Title</label><br />
+        <label>عنوان گروه</label><br />
         <input type="text" name="title" required />
         <br /><br />
-        <button type="submit">Add group</button>
+        <button type="submit">افزودن گروه</button>
       </form>
       <table>
-        <thead><tr><th>Title</th><th>Chat ID</th><th>Status</th><th>Bot Admin</th></tr></thead>
+        <thead><tr><th>عنوان</th><th>chat_id</th><th>وضعیت</th><th>وضعیت ادمین ربات</th></tr></thead>
         <tbody>{group_rows}</tbody>
       </table>
     </div>
 
     <div class="card">
-      <h3>Global Links (used by /sendlinks)</h3>
-      <form method="post" action="/links/update{token_suffix}">
-        {token_input}
-        <textarea name="links_text" placeholder="one link per line">{escape(links_text)}</textarea>
-        <br /><button type="submit">Save links</button>
+      <h3>لینک‌های سراسری</h3>
+      <form method="post" action="{panel_prefix}/links/update">
+        <textarea name="links_text" placeholder="در هر خط یک لینک">{escape(links_text)}</textarea>
+        <br /><button type="submit">ذخیره لینک‌ها</button>
       </form>
     </div>
 
     <div class="card">
-      <h3>Create Scheduled Service</h3>
-      <form method="post" action="/services/add{token_suffix}">
-        {token_input}
-        <label>Name</label><br />
+      <h3>ساخت سرویس زمان‌بندی‌شده</h3>
+      <form method="post" action="{panel_prefix}/services/add">
+        <label>نام سرویس</label><br />
         <input type="text" name="name" required />
         <br /><br />
-        <label>Interval Minutes</label><br />
+        <label>بازه اجرا (دقیقه)</label><br />
         <input type="number" min="1" name="interval_minutes" value="30" required />
         <br /><br />
-        <label><input type="checkbox" name="is_enabled" checked /> Enabled</label>
-        <label style="margin-left:12px;"><input type="checkbox" name="run_now" checked /> Run immediately</label>
+        <label><input type="checkbox" name="is_enabled" checked /> فعال باشد</label>
+        <label style="margin-right:12px;"><input type="checkbox" name="run_now" checked /> بلافاصله اجرا شود</label>
         <br /><br />
-        <label>Select target groups</label>
+        <label>گروه‌های هدف</label>
         <div class="group-box">{group_checkbox}</div>
         <br />
-        <label>Links for this service (leave empty to use global links)</label>
-        <textarea name="service_links_text" placeholder="one link per line"></textarea>
-        <br /><button type="submit">Create service</button>
+        <label>لینک‌های اختصاصی این سرویس (در صورت خالی بودن، از لینک‌های سراسری استفاده می‌شود)</label>
+        <textarea name="service_links_text" placeholder="در هر خط یک لینک"></textarea>
+        <br /><button type="submit">ساخت سرویس</button>
       </form>
     </div>
 
     <div class="card">
-      <h3>Services</h3>
+      <h3>لیست سرویس‌ها</h3>
       <table>
         <thead>
           <tr>
-            <th>ID</th><th>Name</th><th>Interval</th><th>Status</th><th>Next Run</th>
-            <th>Last Run</th><th>Last Status</th><th>Groups</th><th>Links</th><th>Actions</th>
+            <th>شناسه</th><th>نام</th><th>بازه</th><th>وضعیت</th><th>اجرای بعدی</th>
+            <th>آخرین اجرا</th><th>آخرین وضعیت</th><th>تعداد گروه</th><th>تعداد لینک</th><th>عملیات</th>
           </tr>
         </thead>
         <tbody>{service_rows}</tbody>
@@ -1301,53 +1325,90 @@ def create_web_app(storage: Storage) -> FastAPI:
 """
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request, msg: str = "") -> HTMLResponse:
-        token = _validate_token(request)
-        return HTMLResponse(_render_page(token=token, message=msg))
+    async def root() -> HTMLResponse:
+        return HTMLResponse("Panel endpoint is hidden.", status_code=404)
 
-    @app.post("/groups/add")
+    @app.get(f"{panel_prefix}/login", response_class=HTMLResponse)
+    async def login_page(msg: str = "") -> HTMLResponse:
+        if not WEB_PANEL_REQUIRE_LOGIN:
+            return HTMLResponse("<h3>Login is disabled. Configure WEB_PANEL_USERNAME and WEB_PANEL_PASSWORD.</h3>")
+        return HTMLResponse(_render_login_page(message=msg))
+
+    @app.post(f"{panel_prefix}/login")
+    async def login_submit(request: Request) -> RedirectResponse:
+        if not WEB_PANEL_REQUIRE_LOGIN:
+            return RedirectResponse(url=_panel_url("/"), status_code=303)
+        form = await request.form()
+        username = str(form.get("username", "")).strip()
+        password = str(form.get("password", "")).strip()
+        if username != WEB_PANEL_USERNAME or password != WEB_PANEL_PASSWORD:
+            return RedirectResponse(url=_panel_url("/login", "نام کاربری یا رمز عبور اشتباه است"), status_code=303)
+        session_id = secrets.token_urlsafe(32)
+        panel_sessions.add(session_id)
+        response = RedirectResponse(url=_panel_url("/"), status_code=303)
+        response.set_cookie("panel_session", session_id, httponly=True, samesite="lax", max_age=86400)
+        return response
+
+    @app.get(f"{panel_prefix}/logout")
+    async def logout(request: Request) -> RedirectResponse:
+        session_id = request.cookies.get("panel_session", "")
+        if session_id in panel_sessions:
+            panel_sessions.remove(session_id)
+        response = RedirectResponse(url=_panel_url("/login", "خارج شدید"), status_code=303)
+        response.delete_cookie("panel_session")
+        return response
+
+    @app.get(f"{panel_prefix}", response_class=HTMLResponse)
+    @app.get(f"{panel_prefix}/", response_class=HTMLResponse)
+    async def index(request: Request, msg: str = "") -> HTMLResponse | RedirectResponse:
+        unauthorized = await _require_auth(request)
+        if unauthorized:
+            return unauthorized
+        return HTMLResponse(_render_page(message=msg))
+
+    @app.post(f"{panel_prefix}/groups/add")
     async def add_group(request: Request) -> RedirectResponse:
-        token = _validate_token(request)
+        unauthorized = await _require_auth(request)
+        if unauthorized:
+            return unauthorized
         form = await request.form()
         try:
             chat_id = int(str(form.get("chat_id", "")).strip())
         except ValueError:
-            return RedirectResponse(url=f"/?msg=invalid+chat_id&token={token}" if token else "/?msg=invalid+chat_id", status_code=303)
+            return RedirectResponse(url=_panel_url("/", "chat_id نامعتبر است"), status_code=303)
         title = str(form.get("title", "")).strip()
         if not title:
-            return RedirectResponse(url=f"/?msg=title+is+required&token={token}" if token else "/?msg=title+is+required", status_code=303)
+            return RedirectResponse(url=_panel_url("/", "عنوان گروه الزامی است"), status_code=303)
         storage.upsert_group(chat_id=chat_id, title=title, is_active=True, is_admin=False)
-        return RedirectResponse(url=f"/?msg=group+saved&token={token}" if token else "/?msg=group+saved", status_code=303)
+        return RedirectResponse(url=_panel_url("/", "گروه با موفقیت ذخیره شد"), status_code=303)
 
-    @app.post("/links/update")
+    @app.post(f"{panel_prefix}/links/update")
     async def update_links(request: Request) -> RedirectResponse:
-        token = _validate_token(request)
+        unauthorized = await _require_auth(request)
+        if unauthorized:
+            return unauthorized
         form = await request.form()
         links, invalid = parse_links(str(form.get("links_text", "")))
         if invalid:
-            return RedirectResponse(
-                url=f"/?msg=invalid+lines+in+links&token={token}" if token else "/?msg=invalid+lines+in+links",
-                status_code=303,
-            )
+            return RedirectResponse(url=_panel_url("/", "برخی خطوط لینک نامعتبر هستند"), status_code=303)
         storage.replace_links(links)
-        return RedirectResponse(url=f"/?msg=links+saved&token={token}" if token else "/?msg=links+saved", status_code=303)
+        return RedirectResponse(url=_panel_url("/", "لینک‌ها ذخیره شدند"), status_code=303)
 
-    @app.post("/services/add")
+    @app.post(f"{panel_prefix}/services/add")
     async def add_service(request: Request) -> RedirectResponse:
-        token = _validate_token(request)
+        unauthorized = await _require_auth(request)
+        if unauthorized:
+            return unauthorized
         form = await request.form()
         name = str(form.get("name", "")).strip()
         if not name:
-            return RedirectResponse(url=f"/?msg=name+required&token={token}" if token else "/?msg=name+required", status_code=303)
+            return RedirectResponse(url=_panel_url("/", "نام سرویس الزامی است"), status_code=303)
         try:
             interval_minutes = int(str(form.get("interval_minutes", "0")).strip())
         except ValueError:
             interval_minutes = 0
         if interval_minutes <= 0:
-            return RedirectResponse(
-                url=f"/?msg=interval+must+be+positive&token={token}" if token else "/?msg=interval+must+be+positive",
-                status_code=303,
-            )
+            return RedirectResponse(url=_panel_url("/", "بازه زمانی باید بیشتر از صفر باشد"), status_code=303)
 
         group_ids: list[int] = []
         for key, value in form.multi_items():
@@ -1359,26 +1420,17 @@ def create_web_app(storage: Storage) -> FastAPI:
                 continue
         group_ids = sorted(set(group_ids))
         if not group_ids:
-            return RedirectResponse(
-                url=f"/?msg=select+at+least+one+group&token={token}" if token else "/?msg=select+at+least+one+group",
-                status_code=303,
-            )
+            return RedirectResponse(url=_panel_url("/", "حداقل یک گروه انتخاب کنید"), status_code=303)
 
         service_links_text = str(form.get("service_links_text", ""))
         if service_links_text.strip():
             links, invalid = parse_links(service_links_text)
             if invalid or not links:
-                return RedirectResponse(
-                    url=f"/?msg=invalid+service+links&token={token}" if token else "/?msg=invalid+service+links",
-                    status_code=303,
-                )
+                return RedirectResponse(url=_panel_url("/", "لینک‌های سرویس نامعتبر هستند"), status_code=303)
         else:
             links = storage.list_links()
             if not links:
-                return RedirectResponse(
-                    url=f"/?msg=no+global+links+found&token={token}" if token else "/?msg=no+global+links+found",
-                    status_code=303,
-                )
+                return RedirectResponse(url=_panel_url("/", "ابتدا لینک سراسری ثبت کنید"), status_code=303)
 
         is_enabled = "is_enabled" in form
         run_now = "run_now" in form
@@ -1392,40 +1444,40 @@ def create_web_app(storage: Storage) -> FastAPI:
                 run_now=run_now,
             )
         except sqlite3.IntegrityError:
-            return RedirectResponse(
-                url=f"/?msg=service+name+exists&token={token}" if token else "/?msg=service+name+exists",
-                status_code=303,
-            )
-        return RedirectResponse(
-            url=f"/?msg=service+created&token={token}" if token else "/?msg=service+created",
-            status_code=303,
-        )
+            return RedirectResponse(url=_panel_url("/", "نام سرویس تکراری است"), status_code=303)
+        return RedirectResponse(url=_panel_url("/", "سرویس ایجاد شد"), status_code=303)
 
-    @app.post("/services/{service_id}/toggle")
+    @app.post(f"{panel_prefix}/services/{{service_id}}/toggle")
     async def toggle_service(service_id: int, request: Request) -> RedirectResponse:
-        token = _validate_token(request)
+        unauthorized = await _require_auth(request)
+        if unauthorized:
+            return unauthorized
         service = storage.get_service(service_id)
         if not service:
-            return RedirectResponse(url=f"/?msg=service+not+found&token={token}" if token else "/?msg=service+not+found", status_code=303)
+            return RedirectResponse(url=_panel_url("/", "سرویس پیدا نشد"), status_code=303)
         new_value = not service.is_enabled
         storage.set_service_enabled(service_id, new_value)
         if new_value:
             storage.schedule_service_now(service_id)
-        return RedirectResponse(url=f"/?msg=service+updated&token={token}" if token else "/?msg=service+updated", status_code=303)
+        return RedirectResponse(url=_panel_url("/", "وضعیت سرویس تغییر کرد"), status_code=303)
 
-    @app.post("/services/{service_id}/run")
+    @app.post(f"{panel_prefix}/services/{{service_id}}/run")
     async def run_service_now(service_id: int, request: Request) -> RedirectResponse:
-        token = _validate_token(request)
+        unauthorized = await _require_auth(request)
+        if unauthorized:
+            return unauthorized
         if not storage.get_service(service_id):
-            return RedirectResponse(url=f"/?msg=service+not+found&token={token}" if token else "/?msg=service+not+found", status_code=303)
+            return RedirectResponse(url=_panel_url("/", "سرویس پیدا نشد"), status_code=303)
         storage.schedule_service_now(service_id)
-        return RedirectResponse(url=f"/?msg=service+queued&token={token}" if token else "/?msg=service+queued", status_code=303)
+        return RedirectResponse(url=_panel_url("/", "سرویس برای اجرا صف‌بندی شد"), status_code=303)
 
-    @app.post("/services/{service_id}/delete")
+    @app.post(f"{panel_prefix}/services/{{service_id}}/delete")
     async def delete_service(service_id: int, request: Request) -> RedirectResponse:
-        token = _validate_token(request)
+        unauthorized = await _require_auth(request)
+        if unauthorized:
+            return unauthorized
         storage.delete_service(service_id)
-        return RedirectResponse(url=f"/?msg=service+deleted&token={token}" if token else "/?msg=service+deleted", status_code=303)
+        return RedirectResponse(url=_panel_url("/", "سرویس حذف شد"), status_code=303)
 
     return app
 

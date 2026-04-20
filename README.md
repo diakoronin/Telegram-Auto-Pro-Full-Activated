@@ -1,126 +1,89 @@
-# Telegram Group Link Sender Bot (Web Panel + Scheduler + Multi-Service)
+# ربات ارسال لینک تلگرام (پنل وب + زمان‌بندی + چند سرویس همزمان)
 
-این پروژه یک ربات تلگرام + پنل وب است که دقیقاً برای این سناریو ساخته شده:
+این پروژه یک ربات تلگرام است که:
 
-- خودت ربات را در گروه‌ها اضافه می‌کنی.
-- خودت ربات را ادمین می‌کنی (در صورت نیاز).
-- گروه‌ها داخل لیست ثبت می‌شوند.
-- لیست لینک می‌دهی.
-- هم می‌توانی دستی ارسال کنی، هم سرویس زمان‌بندی‌شده بسازی.
-- چند سرویس می‌توانند همزمان اجرا شوند (مثلاً 3 یا 4 سرویس).
+- گروه‌ها را ثبت می‌کند
+- لینک‌ها را نگه می‌دارد
+- ارسال دستی و زمان‌بندی‌شده انجام می‌دهد
+- همزمان چند سرویس ارسال اجرا می‌کند
+- فقط به مالک (`OWNER_ID`) دسترسی می‌دهد
 
-> مهم: استفاده از ابزار باید مطابق قوانین تلگرام و قوانین گروه‌ها باشد.
+---
 
-## قابلیت‌ها
+## امکانات
 
-- ثبت خودکار گروه و وضعیت ادمین ربات
-- ثبت دستی گروه
+- ثبت گروه (خودکار و دستی)
 - مدیریت لینک‌های سراسری
-- ارسال دستی با انتخاب گروه‌ها (Inline Keyboard)
-- پنل وب برای مدیریت گروه، لینک و سرویس‌ها
-- زمان‌بندی ارسال خودکار (service-based scheduler)
-- اجرای همزمان چند سرویس با سقف قابل تنظیم
-- مالک (Owner) برای کنترل دسترسی دستورات بات
+- انتخاب گروه‌ها برای ارسال دستی
+- ساخت سرویس زمان‌بندی (هر سرویس گروه/لینک مستقل)
+- اجرای همزمان سرویس‌ها با سقف قابل تنظیم
+- پنل وب امن با:
+  - مسیر مخفی (`WEB_PANEL_PATH`)
+  - لاگین نام کاربری/رمز عبور
 
-## پیش‌نیاز
+---
 
-- Python 3.10+
-- Bot Token از BotFather
+## تنظیمات مهم `.env`
 
-## نصب
+نمونه:
+
+```env
+BOT_TOKEN=توکن_ربات
+OWNER_ID=2098876051
+STRICT_OWNER_ONLY=true
+
+DB_PATH=bot_data.sqlite3
+SEND_DELAY_SECONDS=1.0
+SCHEDULER_POLL_SECONDS=5
+MAX_CONCURRENT_BROADCASTS=4
+SERVICE_NOTIFY_OWNER=true
+
+WEB_PANEL_ENABLED=true
+WEB_PANEL_HOST=127.0.0.1
+WEB_PANEL_PORT=18080
+WEB_PANEL_PATH=mysecretpanel
+WEB_PANEL_USERNAME=myadmin
+WEB_PANEL_PASSWORD=myStrongPass123
+```
+
+### توضیح سریع
+
+- `OWNER_ID`: فقط همین آیدی به بات دسترسی دارد
+- `MAX_CONCURRENT_BROADCASTS`: تعداد کار همزمان (مثلا 4)
+- `WEB_PANEL_PATH`: مسیر مخفی پنل
+- `WEB_PANEL_USERNAME` / `WEB_PANEL_PASSWORD`: لاگین پنل
+- پورت پیشنهادی پنل: `18080`
+
+---
+
+## نصب سریع (یک دستور)
+
+> اسکریپت نصب ازت Owner، یوزر/پسورد پنل و مسیر پنل را می‌گیرد و در آخر آدرس پنل را چاپ می‌کند.
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-group-link-bot-6341/install.sh?$(date +%s)" -o /tmp/install.sh && \
+sudo BOT_TOKEN='توکن_ربات' OWNER_ID='2098876051' bash /tmp/install.sh
+```
+
+---
+
+## اجرای دستی (بدون اسکریپت)
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-## تنظیمات
-
-```bash
 cp .env.example .env
-```
-
-نمونه:
-
-```env
-BOT_TOKEN=123456789:your_telegram_bot_token_here
-OWNER_ID=2098876051
-STRICT_OWNER_ONLY=true
-DB_PATH=bot_data.sqlite3
-SEND_DELAY_SECONDS=1.0
-MAX_CONCURRENT_BROADCASTS=4
-SCHEDULER_POLL_SECONDS=5
-SERVICE_NOTIFY_OWNER=true
-
-WEB_PANEL_ENABLED=true
-WEB_PANEL_HOST=0.0.0.0
-WEB_PANEL_PORT=8080
-WEB_PANEL_TOKEN=change_this_long_secret_token
-```
-
-### توضیح تنظیمات مهم
-
-- `MAX_CONCURRENT_BROADCASTS`: حداکثر job همزمان (برای نیاز تو روی 3 یا 4 بگذار)
-- `SEND_DELAY_SECONDS`: فاصله بین هر پیام
-- `WEB_PANEL_TOKEN`: توکن امنیتی پنل وب (حتماً مقدار امن بگذار)
-- `OWNER_ID`: آیدی عددی تلگرام مالک (فقط همین آیدی دسترسی دارد)
-- `STRICT_OWNER_ONLY=true`: حالت خصوصی کامل (پیشنهادی)
-
-## اجرا
-
-```bash
 set -a && source .env && set +a
 python3 bot.py
 ```
 
-با اجرای برنامه:
+---
 
-- بات تلگرام بالا می‌آید.
-- پنل وب همزمان روی `WEB_PANEL_HOST:WEB_PANEL_PORT` بالا می‌آید.
+## دستورات اصلی ربات (فارسی)
 
-اگر `WEB_PANEL_TOKEN` تنظیم کرده باشی، پنل را با این آدرس باز کن:
-
-```text
-http://YOUR_HOST:8080/?token=YOUR_TOKEN
-```
-
-## راه‌اندازی اولیه در تلگرام
-
-1. به ربات در PV دستور `/start` بده.
-2. دستور `/claim` بزن تا Owner ثبت شود.
-3. ربات را در گروه‌ها add کن.
-4. در هر گروه دستور `/register` بزن (توسط ادمین گروه).
-5. اگر لازم بود `/refreshadmins` بزن.
-6. لینک‌ها را با `/setlinks` ثبت کن.
-7. ارسال دستی:
-   - `/sendlinks`
-   - گروه‌ها را انتخاب کن
-   - `Start send`
-
-## مدیریت از پنل وب
-
-پنل شامل این بخش‌هاست:
-
-- **Groups**: افزودن دستی گروه + مشاهده لیست گروه‌ها
-- **Global Links**: ویرایش لینک‌های سراسری (برای `/sendlinks`)
-- **Create Scheduled Service**:
-  - نام سرویس
-  - بازه زمانی (دقیقه)
-  - انتخاب گروه‌های هدف
-  - لینک‌های اختصاصی سرویس (یا خالی بگذار تا از Global Links استفاده شود)
-  - فعال/غیرفعال بودن سرویس
-  - اجرای فوری بعد از ساخت
-- **Services**:
-  - Run now
-  - Enable/Disable
-  - Delete
-
-## دستورات تلگرام
-
-### Private (PV)
-
-- `/claim`
+- `/start`
+- `/help`
 - `/whoami`
 - `/setlinks`
 - `/links`
@@ -134,48 +97,13 @@ http://YOUR_HOST:8080/?token=YOUR_TOKEN
 - `/enablesvc <id>`
 - `/disablesvc <id>`
 - `/jobs`
-- `/stop` (توقف همه jobهای فعال)
+- `/stop`
 - `/cancel`
+- `/register` (داخل گروه)
 
-### Group
+---
 
-- `/register`
-
-## نکات عملی برای درخواست تو (3-4 سرویس همزمان)
-
-برای اجرای همزمان 3-4 سرویس:
-
-1. در `.env` مقدار زیر را بگذار:
-   - `MAX_CONCURRENT_BROADCASTS=4`
-2. از پنل وب 3 یا 4 سرویس بساز (هرکدام با گروه/لینک خودش).
-3. سرویس‌ها را Enabled نگه دار.
-4. زمان‌بند خودکار آن‌ها را بر اساس `interval_minutes` اجرا می‌کند.
-
-## ساختار فایل‌ها
-
-- `bot.py` منطق بات + scheduler + web panel
-- `requirements.txt`
-- `.env.example`
-- `install.sh` نصب سریع یک‌دستوری (Ubuntu + systemd)
-
-## نصب سریع با یک دستور
-
-می‌توانی مستقیم با این دستور نصب کامل انجام بدهی:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-group-link-bot-6341/install.sh | \
-sudo BOT_TOKEN='توکن_ربات' WEB_PANEL_TOKEN='یک_توکن_قوی' bash
-```
-
-اسکریپت بالا این کارها را انجام می‌دهد:
-
-- نصب پیش‌نیازها (`python3`, `venv`, `pip`, `git`)
-- کپی/آپدیت سورس در `/opt/telegram-sender`
-- ساخت venv و نصب پکیج‌ها
-- ساخت فایل `.env`
-- ساخت و فعال‌سازی سرویس systemd با نام `telegram-sender.service`
-
-بعد از نصب:
+## وضعیت سرویس
 
 ```bash
 sudo systemctl status telegram-sender
