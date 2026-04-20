@@ -34,3 +34,7 @@
 # Bot local data
 /data/
 *.env
+
+# Python
+__pycache__/
+*.py[cod]
