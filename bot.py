@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus, ChatType
-from telegram.error import TelegramError
+from telegram.error import RetryAfter, TelegramError
 from telegram.ext import (
     ApplicationHandlerStop,
     Application,
@@ -519,12 +519,16 @@ class BroadcastManager:
                 for group_id in group_ids:
                     group_index += 1
                     for link in links:
-                        try:
-                            await self.application.bot.send_message(chat_id=group_id, text=link)
+                        sent = await self._send_with_retry(
+                            chat_id=group_id,
+                            text=link,
+                            owner_chat_id=owner_chat_id,
+                            result=result,
+                        )
+                        if sent:
                             result.sent_ok += 1
-                        except TelegramError as exc:
+                        else:
                             result.sent_fail += 1
-                            result.failures.append(f"{group_id}: {exc}")
                         if SEND_DELAY_SECONDS > 0:
                             await asyncio.sleep(SEND_DELAY_SECONDS)
                     if owner_chat_id:
@@ -536,7 +540,7 @@ class BroadcastManager:
             result.stopped = True
             raise
         except Exception as exc:  # pragma: no cover
-            LOGGER.exception("Unexpected error in broadcast task", exc_info=exc)
+            LOGGER.exception("خطای غیرمنتظره در ارسال", exc_info=exc)
             result.error = str(exc)
         finally:
             if owner_chat_id:
@@ -562,10 +566,47 @@ class BroadcastManager:
                 try:
                     await on_finish(result)
                 except Exception as exc:  # pragma: no cover
-                    LOGGER.exception("on_finish callback failed", exc_info=exc)
+                    LOGGER.exception("اجرای on_finish ناموفق بود", exc_info=exc)
 
             async with self._lock:
                 self.running_tasks.pop(key, None)
+
+    async def _send_with_retry(
+        self,
+        chat_id: int,
+        text: str,
+        owner_chat_id: Optional[int],
+        result: BroadcastResult,
+        max_retry: int = 6,
+    ) -> bool:
+        attempt = 0
+        while attempt < max_retry:
+            try:
+                await self.application.bot.send_message(chat_id=chat_id, text=text)
+                return True
+            except RetryAfter as exc:
+                wait_seconds = max(int(exc.retry_after), 1)
+                attempt += 1
+                if owner_chat_id:
+                    try:
+                        await self.application.bot.send_message(
+                            chat_id=owner_chat_id,
+                            text=(
+                                f"محدودیت تلگرام فعال شد برای گروه {chat_id}.\n"
+                                f"{wait_seconds} ثانیه صبر می‌کنم و دوباره تلاش می‌کنم "
+                                f"(تلاش {attempt}/{max_retry})."
+                            ),
+                        )
+                    except TelegramError:
+                        pass
+                await asyncio.sleep(wait_seconds + 1)
+                continue
+            except TelegramError as exc:
+                result.failures.append(f"{chat_id}: {exc}")
+                return False
+
+        result.failures.append(f"{chat_id}: تلاش مجدد بیش از حد مجاز شد (FloodControl)")
+        return False
 
 
 def get_storage(application: Application) -> Storage:
@@ -627,7 +668,7 @@ async def owner_required(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return True
 
 
-def build_group_selector(groups: list[GroupItem], selected: set[int]) -> InlineKeyboardMarkup:
+def build_group_selector(groups: list[GroupItem], selected: set[int], single_choice: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for group in groups:
         checked = "✅" if group.chat_id in selected else "⬜"
@@ -635,16 +676,33 @@ def build_group_selector(groups: list[GroupItem], selected: set[int]) -> InlineK
         label = f"{checked} {group.title} ({admin_mark})"
         rows.append([InlineKeyboardButton(label[:64], callback_data=f"sel:toggle:{group.chat_id}")])
 
-    rows.append(
-        [
-            InlineKeyboardButton("انتخاب همه", callback_data="sel:all"),
-            InlineKeyboardButton("پاک کردن", callback_data="sel:none"),
-        ]
-    )
+    if not single_choice:
+        rows.append(
+            [
+                InlineKeyboardButton("انتخاب همه", callback_data="sel:all"),
+                InlineKeyboardButton("پاک کردن", callback_data="sel:none"),
+            ]
+        )
     rows.append(
         [
             InlineKeyboardButton("شروع ارسال", callback_data="sel:send"),
             InlineKeyboardButton("لغو", callback_data="sel:cancel"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def build_wizard_group_selector(groups: list[GroupItem], selected_group_id: Optional[int]) -> InlineKeyboardMarkup:
+    selected = {selected_group_id} if selected_group_id is not None else set()
+    rows: list[list[InlineKeyboardButton]] = []
+    for group in groups:
+        checked = "✅" if group.chat_id in selected else "⬜"
+        label = f"{checked} {group.title}"
+        rows.append([InlineKeyboardButton(label[:64], callback_data=f"wiz:pick:{group.chat_id}")])
+    rows.append(
+        [
+            InlineKeyboardButton("ارسال به گروه انتخابی", callback_data="wiz:send"),
+            InlineKeyboardButton("لغو", callback_data="wiz:cancel"),
         ]
     )
     return InlineKeyboardMarkup(rows)
@@ -871,20 +929,14 @@ async def refresh_admins_command(update: Update, context: ContextTypes.DEFAULT_T
 async def sendlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await owner_required(update, context):
         return
-    storage = get_storage(context.application)
-    groups = storage.list_groups(only_active=True)
-    if not groups:
-        await update.effective_message.reply_text("هیچ گروه فعالی موجود نیست.")
-        return
-    links = storage.list_links()
-    if not links:
-        await update.effective_message.reply_text("لینکی ذخیره نشده. اول /setlinks بزن.")
-        return
-    selected = {group.chat_id for group in groups}
-    context.user_data["selected_groups"] = selected
+    context.user_data["wizard_mode"] = True
+    context.user_data["awaiting_wizard_links"] = True
+    context.user_data.pop("wizard_links", None)
+    context.user_data.pop("wizard_group_id", None)
     await update.effective_message.reply_text(
-        f"گروه‌های هدف را انتخاب کن ({len(selected)}/{len(groups)} انتخاب شده):",
-        reply_markup=build_group_selector(groups, selected),
+        "ویزارد ارسال مرحله‌ای شروع شد.\n"
+        "مرحله 1/3: لیست لینک‌ها را بفرست (هر خط یک لینک).\n"
+        "برای لغو: /cancel"
     )
 
 
@@ -957,6 +1009,92 @@ async def selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"گروه‌های هدف را انتخاب کن ({len(selected)}/{len(groups)} انتخاب شده):",
         reply_markup=build_group_selector(groups, selected),
     )
+
+
+async def wizard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    if not await owner_required(update, context):
+        await query.answer("شما دسترسی ندارید", show_alert=True)
+        return
+
+    storage = get_storage(context.application)
+    data = query.data
+
+    if data == "wiz:cancel":
+        context.user_data.pop("wizard_mode", None)
+        context.user_data.pop("awaiting_wizard_links", None)
+        context.user_data.pop("wizard_links", None)
+        context.user_data.pop("wizard_group_id", None)
+        await query.edit_message_text("ویزارد لغو شد.")
+        return
+
+    if data == "wiz:resend_links":
+        context.user_data["awaiting_wizard_links"] = True
+        context.user_data.pop("wizard_links", None)
+        await query.edit_message_text(
+            "مرحله 1/3: لیست لینک‌ها را دوباره بفرست (هر خط یک لینک)."
+        )
+        return
+
+    if data == "wiz:confirm_links":
+        links = context.user_data.get("wizard_links")
+        if not isinstance(links, list) or not links:
+            await query.answer("اول لیست لینک را ارسال کن.", show_alert=True)
+            return
+        groups = storage.list_groups(only_active=True)
+        if not groups:
+            await query.edit_message_text("هیچ گروه فعالی ندارید. ابتدا گروه‌ها را ثبت کن.")
+            return
+        selected = {groups[0].chat_id}
+        context.user_data["wizard_group_id"] = groups[0].chat_id
+        await query.edit_message_text(
+            "مرحله 3/3: یک گروه را انتخاب کن تا ارسال انجام شود.",
+            reply_markup=build_group_selector(groups, selected, single_choice=True),
+        )
+        return
+
+    if data.startswith("wiz:pick:"):
+        try:
+            chat_id = int(data.split(":")[2])
+        except (IndexError, ValueError):
+            await query.answer("انتخاب نامعتبر")
+            return
+        links = context.user_data.get("wizard_links")
+        if not isinstance(links, list) or not links:
+            await query.answer("ابتدا مرحله لینک‌ها را انجام بده.", show_alert=True)
+            return
+        groups = storage.list_groups(only_active=True)
+        group_ids = {group.chat_id for group in groups}
+        if chat_id not in group_ids:
+            await query.answer("گروه دیگر فعال نیست.", show_alert=True)
+            return
+
+        manager = get_manager(context.application)
+        owner_chat_id = update.effective_chat.id if update.effective_chat else None
+        key = f"wizard:{datetime.now().timestamp()}:{secrets.token_hex(3)}"
+        started = await manager.start_job(
+            key=key,
+            group_ids=[chat_id],
+            links=links,
+            owner_chat_id=owner_chat_id,
+            title="wizard-broadcast",
+        )
+        if not started:
+            await query.answer("شروع ارسال ناموفق بود", show_alert=True)
+            return
+
+        context.user_data.pop("wizard_mode", None)
+        context.user_data.pop("awaiting_wizard_links", None)
+        context.user_data.pop("wizard_links", None)
+        context.user_data.pop("wizard_group_id", None)
+        await query.edit_message_text(
+            f"ارسال شروع شد.\nشناسه کار: {key}\nتعداد لینک: {len(links)}\nتعداد گروه: 1"
+        )
+        return
+
+    await query.answer("عملیات نامشخص")
 
 
 async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1040,6 +1178,13 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("awaiting_links", None)
+    context.user_data.pop("wizard_mode", None)
+    context.user_data.pop("awaiting_wizard_links", None)
+    context.user_data.pop("wizard_links", None)
+    context.user_data.pop("wizard_group_id", None)
+    context.user_data.pop("sendlinks_mode", None)
+    context.user_data.pop("pending_links", None)
+    context.user_data.pop("pending_selected_groups", None)
     await update.effective_message.reply_text("لغو شد.")
 
 
@@ -1047,6 +1192,40 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not update.effective_chat or update.effective_chat.type != ChatType.PRIVATE:
         return
     if not await owner_required(update, context):
+        return
+    if context.user_data.get("awaiting_wizard_links"):
+        raw_text = update.effective_message.text or ""
+        links, invalid_lines = parse_links(raw_text)
+        if invalid_lines:
+            preview = "\n".join(invalid_lines[:10])
+            await update.effective_message.reply_text(
+                "چند خط نامعتبر دارید. فقط لینک‌های http/https مجاز هستند:\n"
+                f"{preview}\n\nدوباره لیست لینک را ارسال کن."
+            )
+            return
+        if not links:
+            await update.effective_message.reply_text(
+                "هیچ لینک معتبری پیدا نشد. دوباره لیست لینک را بفرست."
+            )
+            return
+
+        context.user_data["wizard_links"] = links
+        context.user_data["awaiting_wizard_links"] = False
+
+        confirm_keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("تایید لینک‌ها", callback_data="wiz:confirm_links"),
+                    InlineKeyboardButton("ارسال دوباره لیست", callback_data="wiz:resend_links"),
+                ],
+                [InlineKeyboardButton("لغو", callback_data="wiz:cancel")],
+            ]
+        )
+        await update.effective_message.reply_text(
+            f"{len(links)} لینک دریافت شد.\n"
+            "مرحله 2/3: تایید کن تا لیست گروه‌ها باز شود.",
+            reply_markup=confirm_keyboard,
+        )
         return
     if context.user_data.get("awaiting_links"):
         context.user_data["awaiting_links"] = False
@@ -1527,6 +1706,7 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("register", register_group_command))
     app.add_handler(CallbackQueryHandler(selector_callback, pattern=r"^sel:"))
+    app.add_handler(CallbackQueryHandler(wizard_callback, pattern=r"^wiz:"))
     app.add_handler(ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, private_text_handler))
     app.add_error_handler(on_error)
