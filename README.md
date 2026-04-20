@@ -1,82 +1,124 @@
-# ![Locations](https://github.com/M4nifest0/M4nifest0_WhatsApp/blob/master/s.png) 
+# ربات تلگرام مدیریت x-ui (3x-ui)
 
-# Telegram-Auto-Pro-Full-Activated
+ربات تلگرامی برای مدیریت پنل 3x-ui — ساخت سرویس VLESS، ارسال لینک به گروه تلگرام، حذف و ریست ترافیک کلاینت‌ها.
 
-##### Program Features
-----------------------
-📌 activated
+---
 
-📌 No proxy required
+## امکانات
 
-📌 Relatively good speed
+- **ساخت دسته‌ای ۱ تا ۲۰۰ سرویس VLESS** با یک دستور
+- تنظیم **حجم دلخواه** (۰ = نامحدود)
+- تنظیم **مدت اعتبار** به روز (۰ = نامحدود / بدون انقضا)
+- **ارسال خودکار لینک‌ها** به گروه یا کانال تلگرام
+- مشاهده لیست کلاینت‌ها
+- حذف کلاینت
+- ریست ترافیک
+- مشاهده ترافیک مصرفی هر کلاینت
+- وضعیت سرور (CPU، RAM، دیسک، آپتایم)
 
-📌 Requires a virtual server
+---
 
-📌 Slowly adds a member to the group and is a little slow
+## پیش‌نیازها
 
-📌 The full version is hassle-free and fully active
+- Python 3.10+
+- پنل **3x-ui** نصب شده روی سرور
+- توکن ربات تلگرام از [@BotFather](https://t.me/BotFather)
 
-📌 This application is completely free
+---
 
-# Disclaimer:
-----------------------
-- 📌 This tool is designed and developed for professionals and researchers. So do not target others and do not test them for no reason :)
+## نصب و راه‌اندازی
 
-# See how it works:
-----------------------
-- 🔞 https://youtu.be/StG17vQf64E
+```bash
+# ۱. کلون پروژه
+git clone <repo-url>
+cd <repo-folder>
 
-# PassWord File:
-----------------------
-- 🔞 hack4lx.py
+# ۲. نصب وابستگی‌ها
+pip install -r requirements.txt
 
-# Link Download File:
-----------------------
-- 🔞 https://m4nifest0.com/product/telegram-auto-pro-full-activated/
+# ۳. تنظیم فایل .env
+cp .env.example .env
+nano .env   # مقادیر را پر کنید
 
-- 🔞 https://m4nifest0.shop/product/telegram-auto-pro-full-activated/
+# ۴. اجرا
+python bot.py
+```
 
-- 🔞 https://m4nifest0.group/product/telegram-auto-pro-full-activated/
+---
 
-# How to ger:
-----------------------
-- 📌 Visit our channel or our site to download .
+## تنظیمات `.env`
 
-- 🔞 https://m4nifest0.com
-- 🔞 https://m4nifest0.group
-- 🔞 https://m4nifest0.shop
-- 🔞 https://t.me/M4nifest0
+| متغیر | توضیح |
+|---|---|
+| `BOT_TOKEN` | توکن ربات از @BotFather |
+| `ADMIN_IDS` | شناسه عددی ادمین‌ها (با کاما) |
+| `XUI_URL` | آدرس پنل x-ui (مثلاً `http://1.2.3.4:54321`) |
+| `XUI_USER` | نام کاربری پنل |
+| `XUI_PASS` | رمز عبور پنل |
+| `XUI_INBOUND_ID` | شناسه اینباند (از تب Inbounds پنل) |
+| `SERVER_HOST` | دامنه یا آی‌پی سرور (برای ساخت لینک) |
+| `TARGET_CHAT_ID` | شناسه گروه/کانال هدف (`-100...`) |
+| `VERIFY_SSL` | بررسی SSL (`true`/`false`) |
 
-----------------------
+---
 
-<h2>- 📌 Get the tool via the links below</h2>
-<p align="center">	
-</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://t.me/M4nifest0">
-		<img src="https://img.shields.io/badge/Telegram-%23000000.svg?&style=for-the-badge&logo=Telegram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.instagram.com/_m4nifest0_/">
-		<img src="https://img.shields.io/badge/instagram-%23E4405F.svg?&style=for-the-badge&logo=instagram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.youtube.com/c/cybermonitoringhack4lx">
-		<img src="https://img.shields.io/badge/youtube-%23FF0000.svg?&style=for-the-badge&logo=youtube&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://twitter.com/_M4nifest0_">
-		<img src="https://img.shields.io/badge/twitter-%231DA1F2.svg?&style=for-the-badge&logo=twitter&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://m4nifest0.com">
-		<img src="https://img.shields.io/badge/WebSite-%234A154B.svg?&style=for-the-badge&logo=slack&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-</p>
+## دستورات ربات
 
-<h2>📌 Our team specializes in the following programming languages:...</h2> 
-<p align="center">	
-	<img src="https://img.shields.io/badge/node.js%20-%2343853D.svg?&style=for-the-badge&logo=node.js&logoColor=white" />
-        <img src="https://img.shields.io/badge/python%20-%2314354C.svg?&style=for-the-badge&logo=python&logoColor=white" />
-	<img src="https://img.shields.io/badge/c%23%20-%23239120.svg?&style=for-the-badge&logo=c-sharp&logoColor=white" />
-	<img src="https://img.shields.io/badge/java-%23ED8B00.svg?&style=for-the-badge&logo=java&logoColor=white" />
-	<img src="https://img.shields.io/badge/php-%23777BB4.svg?&style=for-the-badge&logo=php&logoColor=white" />
-	<img src="https://img.shields.io/badge/ruby-%23CC342D.svg?&style=for-the-badge&logo=ruby&logoColor=white" />
-	<img src="https://img.shields.io/badge/perl-%2339457E.svg?&style=for-the-badge&logo=perl&logoColor=white" />
-	<img src="https://img.shields.io/badge/c++%20-%2300599C.svg?&style=for-the-badge&logo=c%2B%2B&logoColor=white" />
-</p>
+| دستور | توضیح |
+|---|---|
+| `/start` | منوی اصلی |
+| `/settarget <chat_id>` | تغییر گروه هدف در زمان اجرا |
+| `/cancel` | لغو عملیات |
+| `/help` | راهنما |
+
+---
+
+## جریان ساخت سرویس
+
+```
+/start → منوی اصلی
+  ↓ ➕ ساخت سرویس
+تعداد (۱-۲۰۰)
+  ↓
+پیشوند نام (مثلاً: vpn → vpn1, vpn2, ...)
+  ↓
+حجم GB (۰ = نامحدود)
+  ↓
+مدت روز (۰ = نامحدود)
+  ↓
+تایید → ساخت → ارسال لینک‌ها
+```
+
+---
+
+## اجرا به عنوان سرویس سیستمی
+
+```ini
+# /etc/systemd/system/xui-bot.service
+[Unit]
+Description=x-ui Telegram Bot
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/xui-bot
+ExecStart=/usr/bin/python3 bot.py
+Restart=always
+EnvironmentFile=/opt/xui-bot/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable xui-bot
+sudo systemctl start xui-bot
+```
+
+---
+
+## نکات مهم
+
+- ربات باید **ادمین** گروه/کانال هدف باشد تا بتواند پیام ارسال کند.
+- برای پیدا کردن `chat_id` گروه: ربات را به گروه اضافه کنید سپس از دستور `/settarget` استفاده کنید یا از ابزارهایی مثل `@getidsbot` کمک بگیرید.
+- اگر پنل x-ui پشت nginx/caddy با SSL قرار دارد، `VERIFY_SSL=true` تنظیم کنید.
