@@ -163,6 +163,20 @@ class Storage:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS send_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_key TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    chat_id INTEGER,
+                    link TEXT,
+                    status TEXT NOT NULL,
+                    detail TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.commit()
 
     def set_setting(self, key: str, value: str) -> None:
@@ -397,6 +411,38 @@ class Storage:
                 (dt_to_str(now),),
             ).fetchall()
         return [self._row_to_service(row) for row in rows]
+
+    def add_send_log(
+        self,
+        job_key: str,
+        title: str,
+        chat_id: Optional[int],
+        link: Optional[str],
+        status: str,
+        detail: str = "",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO send_logs(job_key, title, chat_id, link, status, detail)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (job_key, title, chat_id, link, status, detail[:1000]),
+            )
+            conn.commit()
+
+    def list_send_logs(self, limit: int = 20) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, job_key, title, chat_id, link, status, detail, created_at
+                FROM send_logs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+        return list(rows)
 
     def _row_to_service(self, row: sqlite3.Row) -> ServiceItem:
         return ServiceItem(
@@ -741,6 +787,13 @@ def build_wizard_group_selector(groups: list[GroupItem], selected_group_id: Opti
     return InlineKeyboardMarkup(rows)
 
 
+def _shorten_text(value: str, limit: int = 90) -> str:
+    cleaned = value.replace("\n", " ").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3] + "..."
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if STRICT_OWNER_ONLY and not await owner_required(update, context):
         return
@@ -791,6 +844,9 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("نمایش لینک‌ها", callback_data="menu:show_links"),
                 InlineKeyboardButton("وضعیت ارسال", callback_data="menu:status"),
+            ],
+            [
+                InlineKeyboardButton("لاگ ارسال", callback_data="menu:logs"),
             ],
             [
                 InlineKeyboardButton("توقف ارسال", callback_data="menu:stop"),
@@ -910,6 +966,24 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             _build_progress_text(progress),
             reply_markup=build_main_menu_keyboard(),
         )
+        return
+
+    if data == "menu:logs":
+        rows = storage.list_send_logs(limit=15)
+        if not rows:
+            await query.answer("لاگ ارسالی ثبت نشده.", show_alert=True)
+            return
+        lines: list[str] = []
+        for row in rows:
+            status_mark = "✅" if row["status"] == "ok" else ("⏳" if row["status"] == "retry" else "❌")
+            group_val = row["group_id"]
+            group_txt = "-" if group_val is None else str(group_val)
+            lines.append(
+                f"{status_mark} {row['created_at']} | {row['job_key']} | g:{group_txt} | "
+                f"a:{row['attempt']} | {row['status']} | {row['message']}"
+            )
+        text = "آخرین لاگ‌ها:\n" + "\n".join(lines)
+        await query.edit_message_text(text[:4000], reply_markup=build_main_menu_keyboard())
         return
 
     if data == "menu:stop":
@@ -1367,6 +1441,32 @@ async def jobs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.effective_message.reply_text("در حال حاضر کاری در حال اجرا نیست.")
         return
     await update.effective_message.reply_text("کارهای در حال اجرا:\n" + "\n".join(f"- {key}" for key in running))
+
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await owner_required(update, context):
+        return
+    storage = get_storage(context.application)
+    rows = storage.list_send_logs(limit=20)
+    if not rows:
+        await update.effective_message.reply_text("لاگ ارسالی ثبت نشده است.")
+        return
+
+    lines: list[str] = []
+    for row in rows:
+        status_mark = "✅" if row["status"] == "ok" else ("⏳" if row["status"] == "retry" else "❌")
+        group_id = row["group_id"]
+        if group_id is None:
+            group_text = "-"
+        else:
+            group_text = str(group_id)
+        lines.append(
+            f"{status_mark} {row['created_at']} | {row['job_key']} | گروه:{group_text} | "
+            f"تلاش:{row['attempt']} | {row['status']} | {row['message']}"
+        )
+
+    text = "آخرین لاگ‌های ارسال:\n" + "\n".join(lines[:20])
+    await update.effective_message.reply_text(text[:4000])
 
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
