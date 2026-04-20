@@ -152,3 +152,28 @@ http://YOUR_HOST:8080/?token=YOUR_TOKEN
 - `bot.py` منطق بات + scheduler + web panel
 - `requirements.txt`
 - `.env.example`
+- `install.sh` نصب سریع یک‌دستوری (Ubuntu + systemd)
+
+## نصب سریع با یک دستور
+
+می‌توانی مستقیم با این دستور نصب کامل انجام بدهی:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-group-link-bot-6341/install.sh | \
+sudo BOT_TOKEN='توکن_ربات' WEB_PANEL_TOKEN='یک_توکن_قوی' bash
+```
+
+اسکریپت بالا این کارها را انجام می‌دهد:
+
+- نصب پیش‌نیازها (`python3`, `venv`, `pip`, `git`)
+- کپی/آپدیت سورس در `/opt/telegram-sender`
+- ساخت venv و نصب پکیج‌ها
+- ساخت فایل `.env`
+- ساخت و فعال‌سازی سرویس systemd با نام `telegram-sender.service`
+
+بعد از نصب:
+
+```bash
+sudo systemctl status telegram-sender
+journalctl -u telegram-sender -f
+```
