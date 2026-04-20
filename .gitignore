@@ -30,3 +30,17 @@
 *.exe
 *.out
 *.app
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Project data
+*.sqlite3
+*.sqlite
+xui_bot.sqlite3*
+
