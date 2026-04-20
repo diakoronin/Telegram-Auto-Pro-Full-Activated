@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_APP_USER="${SUDO_USER:-telegram-sender}"
+if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+  DEFAULT_APP_USER="$SUDO_USER"
+else
+  DEFAULT_APP_USER="telegram-sender"
+fi
 APP_USER="${APP_USER:-$DEFAULT_APP_USER}"
 APP_DIR="${APP_DIR:-/opt/telegram-sender}"
 SERVICE_NAME="${SERVICE_NAME:-telegram-sender}"
@@ -37,6 +41,11 @@ fi
 if [[ -z "$BOT_TOKEN" ]]; then
   echo "BOT_TOKEN is required."
   exit 1
+fi
+
+if [[ "$APP_USER" == "root" ]]; then
+  echo "APP_USER is root. This is not recommended."
+  echo "Set APP_USER=telegram-sender for safer deployment."
 fi
 
 WEB_PANEL_TOKEN="${WEB_PANEL_TOKEN:-}"
