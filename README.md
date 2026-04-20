@@ -1,82 +1,82 @@
-# ![Locations](https://github.com/M4nifest0/M4nifest0_WhatsApp/blob/master/s.png) 
+# Telegram X-UI Manager Bot
 
-# Telegram-Auto-Pro-Full-Activated
+ربات تلگرامی برای مدیریت سرویس‌های X-UI (3x-ui) از داخل تلگرام.
 
-##### Program Features
-----------------------
-📌 activated
+## قابلیت‌ها
 
-📌 No proxy required
+- اتصال مستقیم به API پنل X-UI
+- نمایش لیست inbound ها
+- ساخت دسته‌ای سرویس از `1` تا `200` عدد در هر درخواست
+- امکان تعیین حجم و زمان دلخواه
+  - `0` برای حجم = نامحدود
+  - `0` برای زمان = نامحدود
+- تعیین پیشوند نام کاربر و `start_index` (مثلا از `0` شروع شود)
+- ارسال خودکار خروجی سرویس‌ها به گروه تلگرام
+- محدود کردن دسترسی به Admin ID
 
-📌 Relatively good speed
+## نصب
 
-📌 Requires a virtual server
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
 
-📌 Slowly adds a member to the group and is a little slow
+مقادیر فایل `.env` را با اطلاعات واقعی خود پر کنید.
 
-📌 The full version is hassle-free and fully active
+## تنظیمات (`.env`)
 
-📌 This application is completely free
+```env
+BOT_TOKEN=123456:telegram-bot-token
+XUI_BASE_URL=http://127.0.0.1:2053
+XUI_USERNAME=admin
+XUI_PASSWORD=admin
+ADMIN_IDS=123456789
+DEFAULT_GROUP_CHAT_ID=-1001234567890
+REQUEST_TIMEOUT_SECONDS=25
+STATE_FILE=bot_state.json
+```
 
-# Disclaimer:
-----------------------
-- 📌 This tool is designed and developed for professionals and researchers. So do not target others and do not test them for no reason :)
+- `ADMIN_IDS`: لیست آی‌دی ادمین‌ها به صورت کاما جدا
+- `DEFAULT_GROUP_CHAT_ID`: اگر بگذارید، خروجی پیش‌فرض به این گروه ارسال می‌شود
+- با دستور `/setgroup` می‌توانید گروه مقصد را در زمان اجرا تغییر دهید
 
-# See how it works:
-----------------------
-- 🔞 https://youtu.be/StG17vQf64E
+## اجرا
 
-# PassWord File:
-----------------------
-- 🔞 hack4lx.py
+```bash
+python3 bot.py
+```
 
-# Link Download File:
-----------------------
-- 🔞 https://m4nifest0.com/product/telegram-auto-pro-full-activated/
+## دستورات ربات
 
-- 🔞 https://m4nifest0.shop/product/telegram-auto-pro-full-activated/
+- `/start` نمایش راهنما
+- `/help` نمایش فرمت ساخت سرویس
+- `/health` بررسی اتصال به X-UI
+- `/inbounds` لیست inbound ها
+- `/setgroup <chat_id>` تنظیم گروه مقصد
+- `/group` نمایش گروه مقصد فعلی
+- `/create <inbound_id> <count> <volume_gb> <days> [prefix] [start_index]`
 
-- 🔞 https://m4nifest0.group/product/telegram-auto-pro-full-activated/
+## نمونه ساخت سرویس
 
-# How to ger:
-----------------------
-- 📌 Visit our channel or our site to download .
+```text
+/create 3 10 50 30 user 0
+```
 
-- 🔞 https://m4nifest0.com
-- 🔞 https://m4nifest0.group
-- 🔞 https://m4nifest0.shop
-- 🔞 https://t.me/M4nifest0
+- 10 سرویس روی inbound شماره 3
+- حجم هر سرویس 50 گیگ
+- زمان هر سرویس 30 روز
+- نام‌ها از `user0` شروع می‌شوند
 
-----------------------
+برای نامحدود:
 
-<h2>- 📌 Get the tool via the links below</h2>
-<p align="center">	
-</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://t.me/M4nifest0">
-		<img src="https://img.shields.io/badge/Telegram-%23000000.svg?&style=for-the-badge&logo=Telegram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.instagram.com/_m4nifest0_/">
-		<img src="https://img.shields.io/badge/instagram-%23E4405F.svg?&style=for-the-badge&logo=instagram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.youtube.com/c/cybermonitoringhack4lx">
-		<img src="https://img.shields.io/badge/youtube-%23FF0000.svg?&style=for-the-badge&logo=youtube&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://twitter.com/_M4nifest0_">
-		<img src="https://img.shields.io/badge/twitter-%231DA1F2.svg?&style=for-the-badge&logo=twitter&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://m4nifest0.com">
-		<img src="https://img.shields.io/badge/WebSite-%234A154B.svg?&style=for-the-badge&logo=slack&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-</p>
+```text
+/create 3 20 0 0 vip 0
+```
 
-<h2>📌 Our team specializes in the following programming languages:...</h2> 
-<p align="center">	
-	<img src="https://img.shields.io/badge/node.js%20-%2343853D.svg?&style=for-the-badge&logo=node.js&logoColor=white" />
-        <img src="https://img.shields.io/badge/python%20-%2314354C.svg?&style=for-the-badge&logo=python&logoColor=white" />
-	<img src="https://img.shields.io/badge/c%23%20-%23239120.svg?&style=for-the-badge&logo=c-sharp&logoColor=white" />
-	<img src="https://img.shields.io/badge/java-%23ED8B00.svg?&style=for-the-badge&logo=java&logoColor=white" />
-	<img src="https://img.shields.io/badge/php-%23777BB4.svg?&style=for-the-badge&logo=php&logoColor=white" />
-	<img src="https://img.shields.io/badge/ruby-%23CC342D.svg?&style=for-the-badge&logo=ruby&logoColor=white" />
-	<img src="https://img.shields.io/badge/perl-%2339457E.svg?&style=for-the-badge&logo=perl&logoColor=white" />
-	<img src="https://img.shields.io/badge/c++%20-%2300599C.svg?&style=for-the-badge&logo=c%2B%2B&logoColor=white" />
-</p>
+## نکات
+
+- برای ارسال پیام در گروه، ربات باید در گروه عضو باشد.
+- `chat_id` گروه معمولا با `-100` شروع می‌شود.
+- لینک خروجی بر اساس نوع پروتکل inbound ساخته می‌شود (vmess / vless / trojan / ss).
