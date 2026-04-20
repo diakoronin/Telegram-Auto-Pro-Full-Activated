@@ -30,3 +30,7 @@
 *.exe
 *.out
 *.app
+
+# Bot local data
+/data/
+*.env
