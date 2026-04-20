@@ -12,6 +12,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -455,6 +456,7 @@ class BroadcastManager:
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.running_tasks: dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
+        self._progress: dict[str, object] | None = None
 
     def running_keys(self) -> list[str]:
         return sorted([key for key, task in self.running_tasks.items() if not task.done()])
@@ -462,6 +464,9 @@ class BroadcastManager:
     def is_running(self, key: str) -> bool:
         task = self.running_tasks.get(key)
         return bool(task and not task.done())
+
+    def get_progress(self) -> Optional[dict[str, object]]:
+        return dict(self._progress) if self._progress else None
 
     async def cancel_all(self) -> int:
         async with self._lock:
@@ -507,6 +512,14 @@ class BroadcastManager:
         on_finish: Optional[Callable[[BroadcastResult], Awaitable[None]]],
     ) -> None:
         result = BroadcastResult(sent_ok=0, sent_fail=0, total=len(group_ids) * len(links), failures=[])
+        self._progress = {
+            "key": key,
+            "title": title,
+            "total": result.total,
+            "sent_ok": 0,
+            "sent_fail": 0,
+            "current_group": None,
+        }
 
         try:
             async with self.semaphore:
@@ -518,6 +531,8 @@ class BroadcastManager:
                 group_index = 0
                 for group_id in group_ids:
                     group_index += 1
+                    if self._progress is not None:
+                        self._progress["current_group"] = group_id
                     for link in links:
                         sent = await self._send_with_retry(
                             chat_id=group_id,
@@ -529,6 +544,9 @@ class BroadcastManager:
                             result.sent_ok += 1
                         else:
                             result.sent_fail += 1
+                        if self._progress is not None:
+                            self._progress["sent_ok"] = result.sent_ok
+                            self._progress["sent_fail"] = result.sent_fail
                         if SEND_DELAY_SECONDS > 0:
                             await asyncio.sleep(SEND_DELAY_SECONDS)
                     if owner_chat_id:
@@ -570,6 +588,7 @@ class BroadcastManager:
 
             async with self._lock:
                 self.running_tasks.pop(key, None)
+                self._progress = None
 
     async def _send_with_retry(
         self,
@@ -619,6 +638,20 @@ def get_manager(application: Application) -> BroadcastManager:
 
 def get_owner_id(application: Application) -> Optional[int]:
     return get_storage(application).get_owner_id()
+
+
+def get_ui_message_id(application: Application) -> Optional[int]:
+    raw_value = get_storage(application).get_setting("ui_message_id")
+    if raw_value is None:
+        return None
+    try:
+        return int(raw_value)
+    except ValueError:
+        return None
+
+
+def set_ui_message_id(application: Application, message_id: int) -> None:
+    get_storage(application).set_setting("ui_message_id", str(message_id))
 
 
 def parse_owner_id_env() -> Optional[int]:
@@ -712,13 +745,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if STRICT_OWNER_ONLY and not await owner_required(update, context):
         return
     if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE:
-        await update.effective_message.reply_text(
-            "ربات فعال است.\n"
-            "برای دیدن دستورات از /help استفاده کن.\n"
-            "برای دیدن آیدی خودت از /whoami استفاده کن."
-        )
+        await send_main_menu(update, context, text="پنل ربات آماده است. از دکمه‌ها استفاده کن.")
         return
     await update.effective_message.reply_text("بعد از افزودن و ادمین کردن ربات، در همین گروه /register بزن.")
+
+
+async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await open_main_menu(update, context)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -746,6 +779,152 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/register - ثبت همین گروه در لیست"
     )
     await update.effective_message.reply_text(text)
+
+
+def build_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("شروع ارسال مرحله‌ای", callback_data="menu:start_wizard"),
+                InlineKeyboardButton("نمایش گروه‌ها", callback_data="menu:show_groups"),
+            ],
+            [
+                InlineKeyboardButton("نمایش لینک‌ها", callback_data="menu:show_links"),
+                InlineKeyboardButton("وضعیت ارسال", callback_data="menu:status"),
+            ],
+            [
+                InlineKeyboardButton("توقف ارسال", callback_data="menu:stop"),
+                InlineKeyboardButton("لغو/بستن", callback_data="menu:close"),
+            ],
+        ]
+    )
+
+
+def _clear_wizard_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("wizard_mode", None)
+    context.user_data.pop("awaiting_wizard_links", None)
+    context.user_data.pop("wizard_links", None)
+    context.user_data.pop("wizard_group_id", None)
+
+
+async def open_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await owner_required(update, context):
+        return
+    text = (
+        "پنل سریع ربات\n"
+        "از دکمه‌ها استفاده کن تا مرحله‌به‌مرحله ارسال انجام شود."
+    )
+    await update.effective_message.reply_text(text, reply_markup=build_main_menu_keyboard())
+
+
+async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await open_main_menu(update, context)
+
+
+async def send_main_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str = "پنل ربات آماده است.",
+) -> None:
+    if not await owner_required(update, context):
+        return
+    await update.effective_message.reply_text(text, reply_markup=build_main_menu_keyboard())
+
+
+def _build_progress_text(progress: dict[str, object]) -> str:
+    total = int(progress.get("total", 0))
+    sent_ok = int(progress.get("sent_ok", 0))
+    sent_fail = int(progress.get("sent_fail", 0))
+    processed = sent_ok + sent_fail
+    percent = int((processed * 100) / total) if total > 0 else 0
+    title = str(progress.get("title", "manual-broadcast"))
+    key = str(progress.get("key", "-"))
+    current_group = progress.get("current_group")
+    current_group_text = str(current_group) if current_group is not None else "-"
+    return (
+        f"پیشرفت ارسال: {percent}%\n"
+        f"عنوان: {title}\n"
+        f"شناسه کار: {key}\n"
+        f"موفق: {sent_ok}\n"
+        f"ناموفق: {sent_fail}\n"
+        f"پردازش‌شده: {processed}/{total}\n"
+        f"گروه فعلی: {current_group_text}"
+    )
+
+
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    if not await owner_required(update, context):
+        await query.answer("شما دسترسی ندارید", show_alert=True)
+        return
+
+    storage = get_storage(context.application)
+    manager = get_manager(context.application)
+    data = query.data
+
+    if data == "menu:start_wizard":
+        _clear_wizard_state(context)
+        context.user_data["wizard_mode"] = True
+        context.user_data["awaiting_wizard_links"] = True
+        await query.edit_message_text(
+            "ویزارد شروع شد.\nمرحله 1/3: لیست لینک‌ها را بفرست (هر خط یک لینک).\nبرای لغو: /cancel"
+        )
+        return
+
+    if data == "menu:show_groups":
+        groups = storage.list_groups()
+        if not groups:
+            await query.answer("گروهی ثبت نشده.", show_alert=True)
+            return
+        lines = []
+        for index, group in enumerate(groups, start=1):
+            status = "فعال" if group.is_active else "غیرفعال"
+            admin = "ادمین" if group.is_admin else "غیرادمین"
+            lines.append(f"{index}. {group.title} | {group.chat_id} | {status} | {admin}")
+        await query.edit_message_text(
+            "گروه‌ها:\n" + "\n".join(lines),
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    if data == "menu:show_links":
+        links = storage.list_links()
+        if not links:
+            await query.answer("لینکی ثبت نشده.", show_alert=True)
+            return
+        lines = [f"{idx + 1}. {link}" for idx, link in enumerate(links[:50])]
+        await query.edit_message_text(
+            "لینک‌ها:\n" + "\n".join(lines),
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    if data == "menu:status":
+        progress = manager.get_progress()
+        if not progress:
+            await query.answer("ارسال فعالی وجود ندارد.", show_alert=True)
+            return
+        await query.edit_message_text(
+            _build_progress_text(progress),
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    if data == "menu:stop":
+        cancelled = await manager.cancel_all()
+        await query.edit_message_text(
+            f"درخواست توقف برای {cancelled} کار ارسال شد.",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    if data == "menu:close":
+        await query.edit_message_text("پنل بسته شد. برای باز کردن دوباره /panel را بزن.")
+        return
+
+    await query.answer("عملیات نامشخص")
 
 
 async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -929,14 +1108,14 @@ async def refresh_admins_command(update: Update, context: ContextTypes.DEFAULT_T
 async def sendlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await owner_required(update, context):
         return
+    _clear_wizard_state(context)
     context.user_data["wizard_mode"] = True
     context.user_data["awaiting_wizard_links"] = True
-    context.user_data.pop("wizard_links", None)
-    context.user_data.pop("wizard_group_id", None)
     await update.effective_message.reply_text(
         "ویزارد ارسال مرحله‌ای شروع شد.\n"
         "مرحله 1/3: لیست لینک‌ها را بفرست (هر خط یک لینک).\n"
-        "برای لغو: /cancel"
+        "برای لغو: /cancel",
+        reply_markup=build_main_menu_keyboard(),
     )
 
 
@@ -1051,7 +1230,7 @@ async def wizard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context.user_data["wizard_group_id"] = groups[0].chat_id
         await query.edit_message_text(
             "مرحله 3/3: یک گروه را انتخاب کن تا ارسال انجام شود.",
-            reply_markup=build_group_selector(groups, selected, single_choice=True),
+            reply_markup=build_wizard_group_selector(groups, groups[0].chat_id),
         )
         return
 
@@ -1070,13 +1249,34 @@ async def wizard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if chat_id not in group_ids:
             await query.answer("گروه دیگر فعال نیست.", show_alert=True)
             return
+        context.user_data["wizard_group_id"] = chat_id
+        await query.edit_message_text(
+            "مرحله 3/3: گروه انتخاب شد. برای ارسال، دکمه ارسال را بزن.",
+            reply_markup=build_wizard_group_selector(groups, chat_id),
+        )
+        return
 
+    if data == "wiz:send":
+        links = context.user_data.get("wizard_links")
+        wizard_group_id = context.user_data.get("wizard_group_id")
+        if not isinstance(links, list) or not links:
+            await query.answer("ابتدا مرحله لینک‌ها را انجام بده.", show_alert=True)
+            return
+        if not isinstance(wizard_group_id, int):
+            await query.answer("ابتدا یک گروه انتخاب کن.", show_alert=True)
+            return
+
+        groups = storage.list_groups(only_active=True)
+        group_ids = {group.chat_id for group in groups}
+        if wizard_group_id not in group_ids:
+            await query.answer("گروه انتخابی فعال نیست.", show_alert=True)
+            return
         manager = get_manager(context.application)
         owner_chat_id = update.effective_chat.id if update.effective_chat else None
         key = f"wizard:{datetime.now().timestamp()}:{secrets.token_hex(3)}"
         started = await manager.start_job(
             key=key,
-            group_ids=[chat_id],
+            group_ids=[wizard_group_id],
             links=links,
             owner_chat_id=owner_chat_id,
             title="wizard-broadcast",
@@ -1173,7 +1373,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not await owner_required(update, context):
         return
     cancelled = await get_manager(context.application).cancel_all()
-    await update.effective_message.reply_text(f"دستور توقف برای {cancelled} کار ارسال شد.")
+    await send_main_menu(update, context, text=f"دستور توقف برای {cancelled} کار ارسال شد.")
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1185,7 +1385,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop("sendlinks_mode", None)
     context.user_data.pop("pending_links", None)
     context.user_data.pop("pending_selected_groups", None)
-    await update.effective_message.reply_text("لغو شد.")
+    await send_main_menu(update, context, text="عملیات لغو شد. پنل آماده است.")
 
 
 async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1697,6 +1897,7 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CommandHandler("removegroup", removegroup_command))
     app.add_handler(CommandHandler("refreshadmins", refresh_admins_command))
     app.add_handler(CommandHandler("sendlinks", sendlinks_command))
+    app.add_handler(CommandHandler("panel", open_main_menu))
     app.add_handler(CommandHandler("services", services_command))
     app.add_handler(CommandHandler("runsvc", runsvc_command))
     app.add_handler(CommandHandler("enablesvc", enablesvc_command))
@@ -1707,6 +1908,7 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CommandHandler("register", register_group_command))
     app.add_handler(CallbackQueryHandler(selector_callback, pattern=r"^sel:"))
     app.add_handler(CallbackQueryHandler(wizard_callback, pattern=r"^wiz:"))
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"))
     app.add_handler(ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, private_text_handler))
     app.add_error_handler(on_error)
