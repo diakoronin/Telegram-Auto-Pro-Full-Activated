@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_USER="${APP_USER:-${SUDO_USER:-$USER}}"
+DEFAULT_APP_USER="${SUDO_USER:-telegram-sender}"
+APP_USER="${APP_USER:-$DEFAULT_APP_USER}"
 APP_DIR="${APP_DIR:-/opt/telegram-sender}"
 SERVICE_NAME="${SERVICE_NAME:-telegram-sender}"
 REPO_URL="${REPO_URL:-https://github.com/diakoronin/Telegram-Auto-Pro-Full-Activated.git}"
@@ -16,14 +17,17 @@ WEB_PANEL_HOST="${WEB_PANEL_HOST:-127.0.0.1}"
 WEB_PANEL_PORT="${WEB_PANEL_PORT:-8080}"
 UFW_OPEN_PANEL="${UFW_OPEN_PANEL:-false}"
 
-SUDO=""
-if [[ "${EUID}" -ne 0 ]]; then
-  if command -v sudo >/dev/null 2>&1; then
-    SUDO="sudo"
-  else
+ROOT_CMD=()
+APP_USER_CMD=()
+if [[ "${EUID}" -eq 0 ]]; then
+  APP_USER_CMD=(su -s /bin/bash "$APP_USER" -c)
+else
+  if ! command -v sudo >/dev/null 2>&1; then
     echo "Please run as root or install sudo."
     exit 1
   fi
+  ROOT_CMD=(sudo)
+  APP_USER_CMD=(sudo -u "$APP_USER" bash -lc)
 fi
 
 BOT_TOKEN="${BOT_TOKEN:-}"
@@ -49,28 +53,28 @@ PY
 fi
 
 echo "[1/8] Installing prerequisites..."
-$SUDO apt-get update -y
-$SUDO apt-get install -y python3 python3-venv python3-pip git
+"${ROOT_CMD[@]}" apt-get update -y
+"${ROOT_CMD[@]}" apt-get install -y python3 python3-venv python3-pip git
 
 echo "[2/8] Preparing app directory..."
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
-  $SUDO useradd -m -s /bin/bash "$APP_USER"
+  "${ROOT_CMD[@]}" useradd -m -s /bin/bash "$APP_USER"
 fi
-$SUDO mkdir -p "$APP_DIR"
-$SUDO chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+"${ROOT_CMD[@]}" mkdir -p "$APP_DIR"
+"${ROOT_CMD[@]}" chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 echo "[3/8] Downloading or updating project..."
 if [[ ! -d "$APP_DIR/.git" ]]; then
-  $SUDO -u "$APP_USER" git clone --branch "$REPO_BRANCH" --single-branch "$REPO_URL" "$APP_DIR"
+  "${APP_USER_CMD[@]}" "git clone --branch \"$REPO_BRANCH\" --single-branch \"$REPO_URL\" \"$APP_DIR\""
 else
-  $SUDO -u "$APP_USER" bash -lc "cd \"$APP_DIR\" && git fetch origin \"$REPO_BRANCH\" && git checkout \"$REPO_BRANCH\" && git pull origin \"$REPO_BRANCH\""
+  "${APP_USER_CMD[@]}" "cd \"$APP_DIR\" && git fetch origin \"$REPO_BRANCH\" && git checkout \"$REPO_BRANCH\" && git pull origin \"$REPO_BRANCH\""
 fi
 
 echo "[4/8] Creating virtual environment and installing Python packages..."
-$SUDO -u "$APP_USER" bash -lc "cd \"$APP_DIR\" && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -r requirements.txt"
+"${APP_USER_CMD[@]}" "cd \"$APP_DIR\" && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -r requirements.txt"
 
 echo "[5/8] Writing environment configuration..."
-$SUDO tee "$APP_DIR/.env" >/dev/null <<EOF
+"${ROOT_CMD[@]}" tee "$APP_DIR/.env" >/dev/null <<EOF
 BOT_TOKEN=$BOT_TOKEN
 DB_PATH=$APP_DIR/bot_data.sqlite3
 SEND_DELAY_SECONDS=$SEND_DELAY_SECONDS
@@ -82,11 +86,11 @@ WEB_PANEL_HOST=$WEB_PANEL_HOST
 WEB_PANEL_PORT=$WEB_PANEL_PORT
 WEB_PANEL_TOKEN=$WEB_PANEL_TOKEN
 EOF
-$SUDO chown "$APP_USER:$APP_USER" "$APP_DIR/.env"
-$SUDO chmod 600 "$APP_DIR/.env"
+"${ROOT_CMD[@]}" chown "$APP_USER:$APP_USER" "$APP_DIR/.env"
+"${ROOT_CMD[@]}" chmod 600 "$APP_DIR/.env"
 
 echo "[6/8] Creating systemd service..."
-$SUDO tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<EOF
+"${ROOT_CMD[@]}" tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<EOF
 [Unit]
 Description=Telegram Sender Bot
 After=network.target
@@ -105,14 +109,14 @@ WantedBy=multi-user.target
 EOF
 
 echo "[7/8] Enabling and starting service..."
-$SUDO systemctl daemon-reload
-$SUDO systemctl enable "$SERVICE_NAME"
-$SUDO systemctl restart "$SERVICE_NAME"
+"${ROOT_CMD[@]}" systemctl daemon-reload
+"${ROOT_CMD[@]}" systemctl enable "$SERVICE_NAME"
+"${ROOT_CMD[@]}" systemctl restart "$SERVICE_NAME"
 
 echo "[8/8] Optional firewall setup..."
 if [[ "$UFW_OPEN_PANEL" == "true" ]]; then
   if command -v ufw >/dev/null 2>&1; then
-    $SUDO ufw allow "$WEB_PANEL_PORT"/tcp
+    "${ROOT_CMD[@]}" ufw allow "$WEB_PANEL_PORT"/tcp
     echo "UFW rule added for port $WEB_PANEL_PORT"
   else
     echo "ufw not installed; skipping firewall rule."
