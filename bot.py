@@ -253,6 +253,11 @@ class Storage:
             )
             conn.commit()
 
+    def delete_group(self, chat_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM groups WHERE chat_id = ?", (chat_id,))
+            conn.commit()
+
     def list_groups(self, only_active: bool = False) -> list[GroupItem]:
         query = """
             SELECT chat_id, title, is_active, is_admin
@@ -495,6 +500,25 @@ def parse_group_ids(raw_text: str) -> tuple[list[int], list[str]]:
     return group_ids, invalid_tokens
 
 
+def parse_manual_group_input(raw_text: str) -> tuple[Optional[int], str]:
+    text = raw_text.strip()
+    if not text:
+        return None, ""
+    if "|" in text:
+        left, right = text.split("|", 1)
+        try:
+            return int(left.strip()), right.strip()
+        except ValueError:
+            return None, ""
+    parts = text.split(maxsplit=1)
+    if len(parts) != 2:
+        return None, ""
+    try:
+        return int(parts[0]), parts[1].strip()
+    except ValueError:
+        return None, ""
+
+
 class BroadcastManager:
     def __init__(self, application: Application, storage: Storage, max_concurrent: int) -> None:
         self.application = application
@@ -503,6 +527,7 @@ class BroadcastManager:
         self.running_tasks: dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
         self._progress: dict[str, object] | None = None
+        self._last_failure_notify_at: float = 0.0
 
     def running_keys(self) -> list[str]:
         return sorted([key for key, task in self.running_tasks.items() if not task.done()])
@@ -558,6 +583,8 @@ class BroadcastManager:
         on_finish: Optional[Callable[[BroadcastResult], Awaitable[None]]],
     ) -> None:
         result = BroadcastResult(sent_ok=0, sent_fail=0, total=len(group_ids) * len(links), failures=[])
+        group_map = {group.chat_id: group for group in self.storage.list_groups()}
+        self._last_failure_notify_at = 0.0
         self._progress = {
             "key": key,
             "title": title,
@@ -579,8 +606,44 @@ class BroadcastManager:
                     group_index += 1
                     if self._progress is not None:
                         self._progress["current_group"] = group_id
+                    known_group = group_map.get(group_id)
+                    if known_group and (not known_group.is_active or not known_group.is_admin):
+                        reason_parts: list[str] = []
+                        if not known_group.is_active:
+                            reason_parts.append("غیرفعال است")
+                        if not known_group.is_admin:
+                            reason_parts.append("ربات ادمین نیست")
+                        reason = " و ".join(reason_parts)
+                        fail_message = f"{group_id}: ارسال رد شد ({reason})"
+                        result.failures.append(fail_message)
+                        for link in links:
+                            result.sent_fail += 1
+                            self.storage.add_send_log(
+                                job_key=key,
+                                title=title,
+                                chat_id=group_id,
+                                link=link,
+                                status="blocked",
+                                detail=reason,
+                            )
+                            if self._progress is not None:
+                                self._progress["sent_fail"] = result.sent_fail
+                        if owner_chat_id:
+                            try:
+                                await self.application.bot.send_message(
+                                    chat_id=owner_chat_id,
+                                    text=(
+                                        f"⚠️ گروه {known_group.title} ({group_id}) قابل ارسال نیست: {reason}\n"
+                                        "برای توقف فوری /stop را بزن."
+                                    ),
+                                )
+                            except TelegramError:
+                                pass
+                        continue
                     for link in links:
                         sent = await self._send_with_retry(
+                            key=key,
+                            title=title,
                             chat_id=group_id,
                             text=link,
                             owner_chat_id=owner_chat_id,
@@ -638,6 +701,8 @@ class BroadcastManager:
 
     async def _send_with_retry(
         self,
+        key: str,
+        title: str,
         chat_id: int,
         text: str,
         owner_chat_id: Optional[int],
@@ -648,10 +713,26 @@ class BroadcastManager:
         while attempt < max_retry:
             try:
                 await self.application.bot.send_message(chat_id=chat_id, text=text)
+                self.storage.add_send_log(
+                    job_key=key,
+                    title=title,
+                    chat_id=chat_id,
+                    link=text,
+                    status="ok",
+                    detail=f"ok (attempt={attempt + 1})",
+                )
                 return True
             except RetryAfter as exc:
                 wait_seconds = max(int(exc.retry_after), 1)
                 attempt += 1
+                self.storage.add_send_log(
+                    job_key=key,
+                    title=title,
+                    chat_id=chat_id,
+                    link=text,
+                    status="retry",
+                    detail=f"retry_after={wait_seconds}s attempt={attempt}/{max_retry}",
+                )
                 if owner_chat_id:
                     try:
                         await self.application.bot.send_message(
@@ -667,10 +748,44 @@ class BroadcastManager:
                 await asyncio.sleep(wait_seconds + 1)
                 continue
             except TelegramError as exc:
-                result.failures.append(f"{chat_id}: {exc}")
+                fail_message = f"{chat_id}: {exc}"
+                result.failures.append(fail_message)
+                self.storage.add_send_log(
+                    job_key=key,
+                    title=title,
+                    chat_id=chat_id,
+                    link=text,
+                    status="fail",
+                    detail=str(exc),
+                )
+                if owner_chat_id:
+                    now = time.monotonic()
+                    if now - self._last_failure_notify_at >= 8:
+                        self._last_failure_notify_at = now
+                        try:
+                            await self.application.bot.send_message(
+                                chat_id=owner_chat_id,
+                                text=(
+                                    f"⚠️ هشدار ارسال\n"
+                                    f"گروه: {chat_id}\n"
+                                    f"خطا: {str(exc)[:300]}\n"
+                                    "برای توقف فوری /stop را بزن."
+                                ),
+                            )
+                        except TelegramError:
+                            pass
                 return False
 
-        result.failures.append(f"{chat_id}: تلاش مجدد بیش از حد مجاز شد (FloodControl)")
+        fail_message = f"{chat_id}: تلاش مجدد بیش از حد مجاز شد (FloodControl)"
+        result.failures.append(fail_message)
+        self.storage.add_send_log(
+            job_key=key,
+            title=title,
+            chat_id=chat_id,
+            link=text,
+            status="fail",
+            detail="retry-limit-exceeded",
+        )
         return False
 
 
@@ -846,6 +961,14 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("وضعیت ارسال", callback_data="menu:status"),
             ],
             [
+                InlineKeyboardButton("بررسی قابلیت ارسال", callback_data="menu:precheck"),
+                InlineKeyboardButton("تغییر وضعیت گروه", callback_data="menu:toggle_group"),
+            ],
+            [
+                InlineKeyboardButton("افزودن گروه", callback_data="menu:add_group"),
+                InlineKeyboardButton("حذف گروه", callback_data="menu:remove_group"),
+            ],
+            [
                 InlineKeyboardButton("لاگ ارسال", callback_data="menu:logs"),
             ],
             [
@@ -908,6 +1031,65 @@ def _build_progress_text(progress: dict[str, object]) -> str:
     )
 
 
+def _group_send_capability_summary(groups: list[GroupItem]) -> tuple[list[str], list[str]]:
+    sendable: list[str] = []
+    blocked: list[str] = []
+    for group in groups:
+        line = f"{group.title} ({group.chat_id})"
+        if group.is_active and group.is_admin:
+            sendable.append(line)
+        else:
+            reason_parts: list[str] = []
+            if not group.is_active:
+                reason_parts.append("غیرفعال")
+            if not group.is_admin:
+                reason_parts.append("ربات ادمین نیست")
+            reason = "، ".join(reason_parts) if reason_parts else "نامشخص"
+            blocked.append(f"{line} -> {reason}")
+    return sendable, blocked
+
+
+def _build_group_manage_keyboard(groups: list[GroupItem], mode: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for group in groups[:80]:
+        status = "فعال" if group.is_active else "غیرفعال"
+        admin = "ادمین" if group.is_admin else "غیرادمین"
+        if mode == "toggle":
+            action = "غیرفعال کن" if group.is_active else "فعال کن"
+            button_text = f"{action} | {group.title} ({admin})"
+            callback = f"manage:toggle:{group.chat_id}"
+        else:
+            button_text = f"حذف | {group.title} ({status}/{admin})"
+            callback = f"manage:delete:{group.chat_id}"
+        rows.append([InlineKeyboardButton(button_text[:64], callback_data=callback)])
+
+    rows.append([InlineKeyboardButton("بازگشت به پنل", callback_data="menu:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_group_preview_text(groups: list[GroupItem], links_count: int) -> str:
+    sendable, blocked = _group_send_capability_summary(groups)
+    lines = [
+        "پیش‌نمایش ارسال قبل از شروع:",
+        f"تعداد لینک: {links_count}",
+        f"گروه قابل ارسال: {len(sendable)}",
+        f"گروه غیرقابل ارسال: {len(blocked)}",
+    ]
+    if sendable:
+        lines.append("\n✅ قابل ارسال:")
+        lines.extend(f"- {line}" for line in sendable[:10])
+    if blocked:
+        lines.append("\n⛔ غیرقابل ارسال:")
+        lines.extend(f"- {line}" for line in blocked[:15])
+        if len(blocked) > 15:
+            lines.append(f"... و {len(blocked) - 15} مورد دیگر")
+    return "\n".join(lines)
+
+
+def _clear_group_manage_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("awaiting_manual_group_add", None)
+
+
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data:
@@ -945,6 +1127,56 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
+    if data == "menu:add_group":
+        _clear_group_manage_state(context)
+        context.user_data["awaiting_manual_group_add"] = True
+        await query.edit_message_text(
+            "فرمت افزودن گروه:\n"
+            "<chat_id> | <title>\n\n"
+            "مثال:\n-1001234567890 | گروه تست\n\n"
+            "بعد از ارسال، گروه به لیست اضافه می‌شود.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("بازگشت به پنل", callback_data="menu:back")]]
+            ),
+        )
+        return
+
+    if data == "menu:remove_group":
+        groups = storage.list_groups()
+        if not groups:
+            await query.answer("گروهی ثبت نشده.", show_alert=True)
+            return
+        _clear_group_manage_state(context)
+        await query.edit_message_text(
+            "حذف گروه: یکی از گروه‌ها را انتخاب کن.",
+            reply_markup=_build_group_manage_keyboard(groups, mode="delete"),
+        )
+        return
+
+    if data == "menu:precheck":
+        groups = storage.list_groups()
+        links = storage.list_links()
+        if not groups:
+            await query.answer("گروهی ثبت نشده.", show_alert=True)
+            return
+        await query.edit_message_text(
+            _build_group_preview_text(groups, links_count=len(links)),
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    if data == "menu:toggle_group":
+        groups = storage.list_groups()
+        if not groups:
+            await query.answer("گروهی ثبت نشده.", show_alert=True)
+            return
+        _clear_group_manage_state(context)
+        await query.edit_message_text(
+            "تغییر وضعیت گروه: روی گروه مورد نظر بزن (فعال/غیرفعال).",
+            reply_markup=_build_group_manage_keyboard(groups, mode="toggle"),
+        )
+        return
+
     if data == "menu:show_links":
         links = storage.list_links()
         if not links:
@@ -976,11 +1208,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         lines: list[str] = []
         for row in rows:
             status_mark = "✅" if row["status"] == "ok" else ("⏳" if row["status"] == "retry" else "❌")
-            group_val = row["group_id"]
+            group_val = row["chat_id"]
             group_txt = "-" if group_val is None else str(group_val)
             lines.append(
                 f"{status_mark} {row['created_at']} | {row['job_key']} | g:{group_txt} | "
-                f"a:{row['attempt']} | {row['status']} | {row['message']}"
+                f"{row['status']} | {row['detail']}"
             )
         text = "آخرین لاگ‌ها:\n" + "\n".join(lines)
         await query.edit_message_text(text[:4000], reply_markup=build_main_menu_keyboard())
@@ -996,6 +1228,48 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "menu:close":
         await query.edit_message_text("پنل بسته شد. برای باز کردن دوباره /panel را بزن.")
+        return
+
+    if data == "menu:back":
+        _clear_group_manage_state(context)
+        await query.edit_message_text("پنل اصلی", reply_markup=build_main_menu_keyboard())
+        return
+
+    if data.startswith("manage:delete:"):
+        try:
+            chat_id = int(data.split(":")[2])
+        except (ValueError, IndexError):
+            await query.answer("شناسه نامعتبر", show_alert=True)
+            return
+        storage.delete_group(chat_id)
+        groups = storage.list_groups()
+        if not groups:
+            await query.edit_message_text("گروهی باقی نمانده.", reply_markup=build_main_menu_keyboard())
+            return
+        await query.edit_message_text(
+            f"گروه {chat_id} حذف شد.",
+            reply_markup=_build_group_manage_keyboard(groups, mode="delete"),
+        )
+        return
+
+    if data.startswith("manage:toggle:"):
+        try:
+            chat_id = int(data.split(":")[2])
+        except (ValueError, IndexError):
+            await query.answer("شناسه نامعتبر", show_alert=True)
+            return
+        groups = storage.list_groups()
+        group = next((item for item in groups if item.chat_id == chat_id), None)
+        if not group:
+            await query.answer("گروه پیدا نشد", show_alert=True)
+            return
+        new_active = not group.is_active
+        storage.set_group_active(chat_id, is_active=new_active)
+        groups = storage.list_groups()
+        await query.edit_message_text(
+            f"وضعیت گروه {chat_id} به {'فعال' if new_active else 'غیرفعال'} تغییر کرد.",
+            reply_markup=_build_group_manage_keyboard(groups, mode='toggle'),
+        )
         return
 
     await query.answer("عملیات نامشخص")
@@ -1455,14 +1729,14 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     lines: list[str] = []
     for row in rows:
         status_mark = "✅" if row["status"] == "ok" else ("⏳" if row["status"] == "retry" else "❌")
-        group_id = row["group_id"]
+        group_id = row["chat_id"]
         if group_id is None:
             group_text = "-"
         else:
             group_text = str(group_id)
         lines.append(
             f"{status_mark} {row['created_at']} | {row['job_key']} | گروه:{group_text} | "
-            f"تلاش:{row['attempt']} | {row['status']} | {row['message']}"
+            f"{row['status']} | {row['detail']}"
         )
 
     text = "آخرین لاگ‌های ارسال:\n" + "\n".join(lines[:20])
@@ -1492,6 +1766,29 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not update.effective_chat or update.effective_chat.type != ChatType.PRIVATE:
         return
     if not await owner_required(update, context):
+        return
+    if context.user_data.get("awaiting_manual_group_add"):
+        chat_id, title = parse_manual_group_input(update.effective_message.text or "")
+        if chat_id is None or not title:
+            await update.effective_message.reply_text(
+                "فرمت نامعتبر است.\n"
+                "فرمت درست:\n"
+                "<chat_id> | <title>\n\n"
+                "مثال:\n-1001234567890 | گروه تست"
+            )
+            return
+        get_storage(context.application).upsert_group(
+            chat_id=chat_id,
+            title=title,
+            is_active=True,
+            is_admin=False,
+        )
+        context.user_data.pop("awaiting_manual_group_add", None)
+        await send_main_menu(
+            update,
+            context,
+            text=f"گروه با موفقیت اضافه شد.\nchat_id: {chat_id}\ntitle: {title}",
+        )
         return
     if context.user_data.get("awaiting_wizard_links"):
         raw_text = update.effective_message.text or ""
