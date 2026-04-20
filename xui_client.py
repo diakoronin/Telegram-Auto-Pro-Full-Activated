@@ -34,12 +34,34 @@ class XUIClient:
         password: str,
         timeout_seconds: int = 25,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = self._normalize_base_url(base_url)
         self.username = username
         self.password = password
         self.timeout_seconds = timeout_seconds
         self._http = requests.Session()
         self._is_logged_in = False
+
+    @staticmethod
+    def _normalize_base_url(raw_url: str) -> str:
+        """
+        Accept both root URL and full panel URLs such as:
+        - https://host:port/random-path
+        - https://host:port/random-path/panel
+        - https://host:port/random-path/panel/inbounds
+        """
+        cleaned = raw_url.strip()
+        if not cleaned:
+            return cleaned
+
+        parsed = urlparse(cleaned)
+        path = parsed.path.rstrip("/")
+        for suffix in ("/panel/inbounds", "/panel"):
+            if path.endswith(suffix):
+                path = path[: -len(suffix)]
+                break
+
+        normalized = parsed._replace(path=path, params="", query="", fragment="")
+        return normalized.geturl().rstrip("/")
 
     def _build_url(self, path: str) -> str:
         if path.startswith("http://") or path.startswith("https://"):
