@@ -1,82 +1,112 @@
-# ![Locations](https://github.com/M4nifest0/M4nifest0_WhatsApp/blob/master/s.png) 
+# Telegram Group Link Sender Bot
 
-# Telegram-Auto-Pro-Full-Activated
+این پروژه یک ربات تلگرام است که برای سناریوی زیر ساخته شده:
 
-##### Program Features
-----------------------
-📌 activated
+- خودت ربات را داخل گروه‌ها اضافه می‌کنی.
+- اگر ربات داخل گروه ادمین شود، وضعیتش ثبت می‌شود.
+- یک لیست لینک به ربات می‌دهی.
+- از لیست گروه‌ها، گروه‌های دلخواه را انتخاب می‌کنی.
+- ربات لینک‌ها را یکی‌یکی داخل گروه‌های انتخاب‌شده ارسال می‌کند.
 
-📌 No proxy required
+> مهم: استفاده از این ابزار باید مطابق قوانین تلگرام و قوانین گروه‌ها باشد.
 
-📌 Relatively good speed
+## قابلیت‌ها
 
-📌 Requires a virtual server
+- ثبت خودکار گروه وقتی ربات به گروه اضافه/حذف/ادمین می‌شود
+- ثبت دستی گروه با `chat_id`
+- لیست کامل گروه‌ها + وضعیت فعال/غیرفعال + ادمین بودن ربات
+- ذخیره لیست لینک (هر خط یک لینک)
+- انتخاب گروه‌ها با دکمه (Inline Keyboard)
+- ارسال ترتیبی لینک‌ها به گروه‌های انتخابی
+- توقف ارسال در حال اجرا
+- مالک (Owner) برای جلوگیری از دسترسی افراد دیگر
 
-📌 Slowly adds a member to the group and is a little slow
+## پیش‌نیاز
 
-📌 The full version is hassle-free and fully active
+- Python 3.10+
+- یک ربات از BotFather
 
-📌 This application is completely free
+## نصب
 
-# Disclaimer:
-----------------------
-- 📌 This tool is designed and developed for professionals and researchers. So do not target others and do not test them for no reason :)
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-# See how it works:
-----------------------
-- 🔞 https://youtu.be/StG17vQf64E
+## تنظیمات
 
-# PassWord File:
-----------------------
-- 🔞 hack4lx.py
+فایل `.env.example` را کپی کن:
 
-# Link Download File:
-----------------------
-- 🔞 https://m4nifest0.com/product/telegram-auto-pro-full-activated/
+```bash
+cp .env.example .env
+```
 
-- 🔞 https://m4nifest0.shop/product/telegram-auto-pro-full-activated/
+داخل `.env` مقدارها را تنظیم کن:
 
-- 🔞 https://m4nifest0.group/product/telegram-auto-pro-full-activated/
+```env
+BOT_TOKEN=توکن_ربات
+DB_PATH=bot_data.sqlite3
+SEND_DELAY_SECONDS=1.0
+```
 
-# How to ger:
-----------------------
-- 📌 Visit our channel or our site to download .
+## اجرا
 
-- 🔞 https://m4nifest0.com
-- 🔞 https://m4nifest0.group
-- 🔞 https://m4nifest0.shop
-- 🔞 https://t.me/M4nifest0
+```bash
+set -a && source .env && set +a
+python bot.py
+```
 
-----------------------
+## راه‌اندازی اولیه داخل تلگرام
 
-<h2>- 📌 Get the tool via the links below</h2>
-<p align="center">	
-</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://t.me/M4nifest0">
-		<img src="https://img.shields.io/badge/Telegram-%23000000.svg?&style=for-the-badge&logo=Telegram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.instagram.com/_m4nifest0_/">
-		<img src="https://img.shields.io/badge/instagram-%23E4405F.svg?&style=for-the-badge&logo=instagram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.youtube.com/c/cybermonitoringhack4lx">
-		<img src="https://img.shields.io/badge/youtube-%23FF0000.svg?&style=for-the-badge&logo=youtube&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://twitter.com/_M4nifest0_">
-		<img src="https://img.shields.io/badge/twitter-%231DA1F2.svg?&style=for-the-badge&logo=twitter&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://m4nifest0.com">
-		<img src="https://img.shields.io/badge/WebSite-%234A154B.svg?&style=for-the-badge&logo=slack&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-</p>
+1. به ربات در پیام خصوصی `/start` بده.
+2. دستور `/claim` بزن تا مالک ربات ثبت شوی.
+3. داخل هر گروهی که می‌خواهی:
+   - ربات را اضافه کن
+   - اگر لازم است ادمینش کن
+   - دستور `/register` را همان گروه بزن (توسط ادمین گروه)
+4. در پیام خصوصی ربات:
+   - `/setlinks` بزن و لیست لینک‌ها را هر خط یکی بفرست.
+   - `/sendlinks` بزن، از لیست گروه‌ها انتخاب کن و `Start send` را بزن.
 
-<h2>📌 Our team specializes in the following programming languages:...</h2> 
-<p align="center">	
-	<img src="https://img.shields.io/badge/node.js%20-%2343853D.svg?&style=for-the-badge&logo=node.js&logoColor=white" />
-        <img src="https://img.shields.io/badge/python%20-%2314354C.svg?&style=for-the-badge&logo=python&logoColor=white" />
-	<img src="https://img.shields.io/badge/c%23%20-%23239120.svg?&style=for-the-badge&logo=c-sharp&logoColor=white" />
-	<img src="https://img.shields.io/badge/java-%23ED8B00.svg?&style=for-the-badge&logo=java&logoColor=white" />
-	<img src="https://img.shields.io/badge/php-%23777BB4.svg?&style=for-the-badge&logo=php&logoColor=white" />
-	<img src="https://img.shields.io/badge/ruby-%23CC342D.svg?&style=for-the-badge&logo=ruby&logoColor=white" />
-	<img src="https://img.shields.io/badge/perl-%2339457E.svg?&style=for-the-badge&logo=perl&logoColor=white" />
-	<img src="https://img.shields.io/badge/c++%20-%2300599C.svg?&style=for-the-badge&logo=c%2B%2B&logoColor=white" />
-</p>
+## دستورات اصلی
+
+### دستورات خصوصی (PV)
+
+- `/claim` ثبت مالک (فقط اولین بار)
+- `/whoami` نمایش user id
+- `/setlinks` ثبت لینک‌ها (هر خط یک لینک)
+- `/links` نمایش لینک‌های ذخیره‌شده
+- `/groups` نمایش گروه‌های ذخیره‌شده
+- `/addgroup <chat_id> <title>` افزودن دستی گروه
+- `/removegroup <chat_id>` غیرفعال کردن گروه
+- `/refreshadmins` بررسی مجدد ادمین بودن ربات در گروه‌ها
+- `/sendlinks` انتخاب گروه‌ها و شروع ارسال
+- `/stop` توقف ارسال فعال
+- `/cancel` لغو وضعیت انتظار ورودی
+
+### دستور گروه
+
+- `/register` ثبت همان گروه در لیست
+
+## نکات مهم
+
+- اگر ربات در یک گروه ادمین نباشد، ممکن است ارسال با خطا مواجه شود.
+- با `/refreshadmins` وضعیت ادمین بودن را آپدیت کن.
+- فاصله ارسال‌ها با `SEND_DELAY_SECONDS` کنترل می‌شود.
+- دیتابیس SQLite لوکال است و در فایل `DB_PATH` نگه‌داری می‌شود.
+
+## ساختار فایل‌ها
+
+- `bot.py` منطق کامل ربات
+- `requirements.txt` وابستگی‌ها
+- `.env.example` تنظیمات نمونه
+
+## توسعه
+
+اگر بخواهی، می‌توانم در مرحله بعد این موارد را هم اضافه کنم:
+
+- پنل وب ساده برای مدیریت گروه/لینک
+- زمان‌بندی ارسال (Scheduler)
+- ارسال کپشن‌دار یا پیام ترکیبی
+- گزارش کامل خروجی ارسال به CSV
