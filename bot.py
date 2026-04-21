@@ -1922,6 +1922,11 @@ async def private_document_handler(update: Update, context: ContextTypes.DEFAULT
         if context.user_data.get("awaiting_links") or context.user_data.get("awaiting_links_file"):
             await update.effective_message.reply_text("فقط فایل txt مجاز است.")
         return
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            f"فایل دریافت شد: {file_name}\nدر حال پردازش لینک‌ها..."
+        )
+    LOGGER.info("TXT document received from owner: %s (mime=%s)", file_name, mime_type or "-")
     telegram_file = await document.get_file()
     file_bytes = await telegram_file.download_as_bytearray()
     context.user_data["awaiting_links"] = False
