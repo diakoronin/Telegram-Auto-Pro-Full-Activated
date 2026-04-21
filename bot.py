@@ -994,6 +994,9 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("وضعیت ارسال", callback_data="menu:status"),
             ],
             [
+                InlineKeyboardButton("ثبت لینک با فایل txt", callback_data="menu:setlinks_file"),
+            ],
+            [
                 InlineKeyboardButton("بررسی قابلیت ارسال", callback_data="menu:precheck"),
                 InlineKeyboardButton("تغییر وضعیت گروه", callback_data="menu:toggle_group"),
             ],
@@ -1157,6 +1160,19 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.edit_message_text(
             "گروه‌ها:\n" + "\n".join(lines),
             reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    if data == "menu:setlinks_file":
+        context.user_data["awaiting_links_file"] = True
+        context.user_data["awaiting_links"] = True
+        await query.edit_message_text(
+            "حالت ثبت لینک با فایل فعال شد.\n"
+            "الان یک فایل txt بفرست (هر خط یک لینک).\n"
+            "برای لغو: /cancel",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("بازگشت به پنل", callback_data="menu:back")]]
+            ),
         )
         return
 
