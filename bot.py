@@ -1913,12 +1913,11 @@ async def private_document_handler(update: Update, context: ContextTypes.DEFAULT
     document = update.effective_message.document if update.effective_message else None
     if not document:
         return
-    if not (context.user_data.get("awaiting_links") or context.user_data.get("awaiting_links_file")):
-        return
     file_name = document.file_name or "links.txt"
     mime_type = document.mime_type or ""
     if not _is_txt_document(file_name, mime_type):
-        await update.effective_message.reply_text("فقط فایل txt مجاز است.")
+        if context.user_data.get("awaiting_links") or context.user_data.get("awaiting_links_file"):
+            await update.effective_message.reply_text("فقط فایل txt مجاز است.")
         return
     telegram_file = await document.get_file()
     file_bytes = await telegram_file.download_as_bytearray()
