@@ -45,6 +45,12 @@ SEND_DELAY_SECONDS = float(os.getenv("SEND_DELAY_SECONDS", "3.0"))
 MIN_SEND_GAP_SECONDS = max(float(os.getenv("MIN_SEND_GAP_SECONDS", "2.2")), 0.0)
 SCHEDULER_POLL_SECONDS = max(float(os.getenv("SCHEDULER_POLL_SECONDS", "5.0")), 1.0)
 MAX_CONCURRENT_BROADCASTS = max(int(os.getenv("MAX_CONCURRENT_BROADCASTS", "4")), 1)
+DB_TIMEOUT_SECONDS = max(float(os.getenv("DB_TIMEOUT_SECONDS", "20.0")), 1.0)
+SEND_LOG_RETENTION = max(int(os.getenv("SEND_LOG_RETENTION", "30000")), 1000)
+SEND_LOG_PRUNE_INTERVAL_SECONDS = max(
+    float(os.getenv("SEND_LOG_PRUNE_INTERVAL_SECONDS", "900.0")),
+    60.0,
+)
 WEB_PANEL_ENABLED = os.getenv("WEB_PANEL_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 WEB_PANEL_HOST = os.getenv("WEB_PANEL_HOST", "0.0.0.0")
 WEB_PANEL_PORT = int(os.getenv("WEB_PANEL_PORT", "18080"))
@@ -109,17 +115,37 @@ def dt_from_str(value: str) -> datetime:
     return datetime.fromisoformat(normalized).astimezone(timezone.utc)
 
 
+def _is_access_lost_error(exc: TelegramError) -> bool:
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in (
+            "chat not found",
+            "forbidden",
+            "bot was kicked",
+            "kicked from the",
+            "have no rights",
+            "not enough rights",
+            "member not found",
+            "group chat was upgraded",
+        )
+    )
+
+
 class Storage:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=DB_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {int(DB_TIMEOUT_SECONDS * 1000)}")
         return conn
 
     def init(self) -> None:
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS groups (
@@ -441,15 +467,25 @@ class Storage:
         status: str,
         detail: str = "",
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO send_logs(job_key, title, chat_id, link, status, detail)
-                VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (job_key, title, chat_id, link, status, detail[:1000]),
-            )
-            conn.commit()
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with self._connect() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO send_logs(job_key, title, chat_id, link, status, detail)
+                        VALUES(?, ?, ?, ?, ?, ?)
+                        """,
+                        (job_key, title, chat_id, link, status, detail[:1000]),
+                    )
+                    conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() and attempt < max_attempts:
+                    time.sleep(0.15 * attempt)
+                    continue
+                LOGGER.warning("ثبت لاگ ارسال ناموفق بود: %s", exc)
+                return
 
     def list_send_logs(self, limit: int = 20) -> list[sqlite3.Row]:
         with self._connect() as conn:
@@ -463,6 +499,24 @@ class Storage:
                 (max(1, min(limit, 200)),),
             ).fetchall()
         return list(rows)
+
+    def trim_send_logs(self, keep_last: int) -> int:
+        keep = max(int(keep_last), 100)
+        try:
+            with self._connect() as conn:
+                row = conn.execute("SELECT MAX(id) AS max_id FROM send_logs").fetchone()
+                max_id = int(row["max_id"]) if row and row["max_id"] is not None else 0
+                if max_id <= 0:
+                    return 0
+                threshold = max_id - keep
+                if threshold <= 0:
+                    return 0
+                cursor = conn.execute("DELETE FROM send_logs WHERE id <= ?", (threshold,))
+                conn.commit()
+                return int(cursor.rowcount or 0)
+        except sqlite3.OperationalError as exc:
+            LOGGER.warning("پاک‌سازی لاگ‌های قدیمی ناموفق بود: %s", exc)
+            return 0
 
     def _row_to_service(self, row: sqlite3.Row) -> ServiceItem:
         return ServiceItem(
@@ -942,11 +996,26 @@ async def sync_groups_admin_status(
             is_admin = bot_member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
             if is_admin != group.is_admin:
                 storage.set_group_admin(group.chat_id, is_admin=is_admin)
-        except TelegramError:
+        except (TimedOut, NetworkError, RetryAfter) as exc:
+            LOGGER.warning("بررسی ادمین گروه %s موقتا ناموفق بود: %s", group.chat_id, exc)
+        except TelegramError as exc:
+            if not _is_access_lost_error(exc):
+                LOGGER.warning("بررسی ادمین گروه %s ناموفق بود: %s", group.chat_id, exc)
+                refreshed.append(
+                    GroupItem(
+                        chat_id=group.chat_id,
+                        title=group.title,
+                        is_active=is_active,
+                        is_admin=is_admin,
+                    )
+                )
+                continue
             is_active = False
             is_admin = False
             if group.is_active:
                 storage.set_group_active(group.chat_id, is_active=False)
+            if group.is_admin:
+                storage.set_group_admin(group.chat_id, is_admin=False)
         refreshed.append(
             GroupItem(
                 chat_id=group.chat_id,
@@ -2133,8 +2202,15 @@ async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_T
 async def scheduler_loop(application: Application) -> None:
     storage = get_storage(application)
     manager = get_manager(application)
+    last_prune_at = 0.0
     while True:
         try:
+            now_mono = time.monotonic()
+            if now_mono - last_prune_at >= SEND_LOG_PRUNE_INTERVAL_SECONDS:
+                removed = storage.trim_send_logs(SEND_LOG_RETENTION)
+                if removed:
+                    LOGGER.info("لاگ‌های قدیمی ارسال پاک شدند: %s رکورد", removed)
+                last_prune_at = now_mono
             now = utc_now()
             due_services = storage.list_due_services(now)
             if due_services:
