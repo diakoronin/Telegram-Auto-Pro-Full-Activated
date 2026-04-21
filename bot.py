@@ -1391,6 +1391,24 @@ async def set_links_from_document(
     await set_links_from_text(update, context, raw_text)
     await update.effective_message.reply_text(f"منبع لینک‌ها: فایل {file_name}")
 
+    # If wizard mode is active, continue automatically to group-selection step.
+    if context.user_data.get("wizard_mode"):
+        links, _ = parse_links(raw_text)
+        if links:
+            context.user_data["wizard_links"] = links
+            context.user_data["awaiting_wizard_links"] = False
+            groups = get_storage(context.application).list_groups(only_active=True)
+            if groups:
+                first_group = groups[0].chat_id
+                context.user_data["wizard_group_id"] = first_group
+                if update.effective_message:
+                    await update.effective_message.reply_text(
+                        "مرحله 2/2: گروه مقصد را انتخاب کن، سپس روی «ارسال به گروه انتخابی» بزن.",
+                        reply_markup=build_wizard_group_selector(groups, first_group),
+                    )
+            elif update.effective_message:
+                await update.effective_message.reply_text("هیچ گروه فعالی ندارید. اول گروه ثبت کن.")
+
 
 async def setlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await owner_required(update, context):
@@ -1409,9 +1427,11 @@ async def setlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def setlinksfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await owner_required(update, context):
         return
+    context.user_data["wizard_mode"] = True
+    context.user_data["awaiting_wizard_links"] = True
     context.user_data["awaiting_links_file"] = True
     await update.effective_message.reply_text(
-        "حالت دریافت فایل فعال شد.\n"
+        "حالت دریافت فایل فعال شد (ارسال مرحله‌ای).\n"
         "الان یک فایل txt بفرست (هر خط یک لینک).\n"
         "برای لغو: /cancel"
     )
