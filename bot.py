@@ -60,7 +60,6 @@ SERVICE_NOTIFY_OWNER = os.getenv("SERVICE_NOTIFY_OWNER", "true").lower() in {
     "yes",
     "on",
 }
-LINK_PATTERN = re.compile(r"^https?://\S+$", re.IGNORECASE)
 MAX_LINKS_TEXT_BYTES = 5 * 1024 * 1024
 WEB_PANEL_PATH = re.sub(r"[^a-zA-Z0-9_-]", "", WEB_PANEL_PATH) or "panel"
 
@@ -474,12 +473,13 @@ def parse_links(raw_text: str) -> tuple[list[str], list[str]]:
         line = raw_line.strip()
         if not line:
             continue
-        if LINK_PATTERN.match(line):
-            if line not in seen:
-                valid_links.append(line)
-                seen.add(line)
-        else:
+        # Accept common subscription formats (http/https, vmess, vless, trojan, ss, etc.)
+        if "://" not in line and not line.lower().startswith(("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "tuic://", "wireguard://")):
             invalid_lines.append(line)
+            continue
+        if line not in seen:
+            valid_links.append(line)
+            seen.add(line)
     return valid_links, invalid_lines
 
 
@@ -1364,7 +1364,9 @@ async def set_links_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if invalid_lines:
         invalid_preview = "\n".join(invalid_lines[:10])
         await update.effective_message.reply_text(
-            "چند خط نامعتبر شناسایی شد. فقط لینک‌های http/https مجاز هستند.\n" f"{invalid_preview}"
+            "چند خط نامعتبر شناسایی شد.\n"
+            "فرمت‌های قابل قبول: http/https و همچنین vmess/vless/trojan/ss/ssr و مشابه.\n"
+            f"{invalid_preview}"
         )
         return
     if not links:
@@ -1872,7 +1874,8 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if invalid_lines:
             preview = "\n".join(invalid_lines[:10])
             await update.effective_message.reply_text(
-                "چند خط نامعتبر دارید. فقط لینک‌های http/https مجاز هستند:\n"
+                "چند خط نامعتبر دارید.\n"
+                "فرمت‌های قابل قبول: http/https و همچنین vmess/vless/trojan/ss/ssr و مشابه.\n"
                 f"{preview}\n\nدوباره لیست لینک را ارسال کن."
             )
             return
