@@ -61,6 +61,7 @@ SERVICE_NOTIFY_OWNER = os.getenv("SERVICE_NOTIFY_OWNER", "true").lower() in {
     "on",
 }
 LINK_PATTERN = re.compile(r"^https?://\S+$", re.IGNORECASE)
+MAX_LINKS_TEXT_BYTES = 5 * 1024 * 1024
 WEB_PANEL_PATH = re.sub(r"[^a-zA-Z0-9_-]", "", WEB_PANEL_PATH) or "panel"
 
 
@@ -520,6 +521,21 @@ def parse_manual_group_input(raw_text: str) -> tuple[Optional[int], str]:
         return None, ""
 
 
+def _is_txt_document(file_name: str, mime_type: str) -> bool:
+    lower_name = file_name.lower()
+    lower_mime = mime_type.lower()
+    return lower_name.endswith(".txt") or lower_mime.startswith("text/")
+
+
+def _decode_text_payload(payload: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "utf-16", "cp1256"):
+        try:
+            return payload.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return payload.decode("utf-8", errors="replace")
+
+
 class BroadcastManager:
     def __init__(self, application: Application, storage: Storage, max_concurrent: int) -> None:
         self.application = application
@@ -946,6 +962,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/claim - ثبت مالک (فقط بار اول)\n"
         "/whoami - نمایش آیدی تلگرام شما\n"
         "/setlinks - ثبت لینک‌ها (هر خط یک لینک)\n"
+        "/setlinksfile - حالت دریافت فایل txt لینک\n"
         "/links - نمایش لینک‌های ذخیره‌شده\n"
         "/groups - نمایش گروه‌های ذخیره‌شده\n"
         "/addgroup <chat_id> <title> - افزودن دستی گروه\n"
@@ -1343,6 +1360,20 @@ async def set_links_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.effective_message.reply_text(f"{len(links)} لینک با موفقیت ذخیره شد.")
 
 
+async def set_links_from_document(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    file_name: str,
+    file_bytes: bytes,
+) -> None:
+    if len(file_bytes) > MAX_LINKS_TEXT_BYTES:
+        await update.effective_message.reply_text("فایل خیلی بزرگ است. حداکثر 5 مگابایت مجاز است.")
+        return
+    raw_text = _decode_text_payload(file_bytes)
+    await set_links_from_text(update, context, raw_text)
+    await update.effective_message.reply_text(f"منبع لینک‌ها: فایل {file_name}")
+
+
 async def setlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await owner_required(update, context):
         return
@@ -1352,7 +1383,19 @@ async def setlinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     context.user_data["awaiting_links"] = True
     await update.effective_message.reply_text(
-        "الان لینک‌ها را بفرست (هر خط یک لینک).\nمثال:\nhttps://t.me/channel1\nhttps://t.me/channel2"
+        "الان لینک‌ها را بفرست (هر خط یک لینک) یا یک فایل txt بفرست.\n"
+        "مثال:\nhttps://t.me/channel1\nhttps://t.me/channel2"
+    )
+
+
+async def setlinksfile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await owner_required(update, context):
+        return
+    context.user_data["awaiting_links_file"] = True
+    await update.effective_message.reply_text(
+        "حالت دریافت فایل فعال شد.\n"
+        "الان یک فایل txt بفرست (هر خط یک لینک).\n"
+        "برای لغو: /cancel"
     )
 
 
@@ -1775,6 +1818,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop("sendlinks_mode", None)
     context.user_data.pop("pending_links", None)
     context.user_data.pop("pending_selected_groups", None)
+    context.user_data.pop("awaiting_links_file", None)
     await send_main_menu(update, context, text="عملیات لغو شد. پنل آماده است.")
 
 
@@ -1843,6 +1887,28 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if context.user_data.get("awaiting_links"):
         context.user_data["awaiting_links"] = False
         await set_links_from_text(update, context, update.effective_message.text or "")
+
+
+async def private_document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or update.effective_chat.type != ChatType.PRIVATE:
+        return
+    if not await owner_required(update, context):
+        return
+    document = update.effective_message.document if update.effective_message else None
+    if not document:
+        return
+    if not (context.user_data.get("awaiting_links") or context.user_data.get("awaiting_links_file")):
+        return
+    file_name = document.file_name or "links.txt"
+    mime_type = document.mime_type or ""
+    if not _is_txt_document(file_name, mime_type):
+        await update.effective_message.reply_text("فقط فایل txt مجاز است.")
+        return
+    telegram_file = await document.get_file()
+    file_bytes = await telegram_file.download_as_bytearray()
+    context.user_data["awaiting_links"] = False
+    context.user_data["awaiting_links_file"] = False
+    await set_links_from_document(update, context, file_name=file_name, file_bytes=bytes(file_bytes))
 
 
 async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2304,6 +2370,7 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CommandHandler("whoami", whoami_command))
     app.add_handler(CommandHandler("claim", claim_command))
     app.add_handler(CommandHandler("setlinks", setlinks_command))
+    app.add_handler(CommandHandler("setlinksfile", setlinksfile_command))
     app.add_handler(CommandHandler("links", links_command))
     app.add_handler(CommandHandler("groups", groups_command))
     app.add_handler(CommandHandler("addgroup", addgroup_command))
@@ -2324,6 +2391,7 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^manage:"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"))
     app.add_handler(ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Document.ALL, private_document_handler))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, private_text_handler))
     app.add_error_handler(on_error)
     return app
