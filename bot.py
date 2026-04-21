@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import secrets
+import ssl
 import sqlite3
 import threading
 import time
@@ -21,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Awaitable, Callable, Optional
 from urllib.parse import quote_plus, urlencode, urlparse
-from urllib.request import HTTPCookieProcessor, Request as UrlRequest, build_opener
+from urllib.request import HTTPCookieProcessor, HTTPSHandler, Request as UrlRequest, build_opener
 from urllib.error import HTTPError, URLError
 from http.cookiejar import CookieJar
 
@@ -57,6 +58,7 @@ SEND_LOG_PRUNE_INTERVAL_SECONDS = max(
     60.0,
 )
 XUI_HTTP_TIMEOUT_SECONDS = max(float(os.getenv("XUI_HTTP_TIMEOUT_SECONDS", "25.0")), 5.0)
+XUI_DEFAULT_TLS_VERIFY = os.getenv("XUI_TLS_VERIFY", "true").lower() in {"1", "true", "yes", "on"}
 WEB_PANEL_ENABLED = os.getenv("WEB_PANEL_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 WEB_PANEL_HOST = os.getenv("WEB_PANEL_HOST", "0.0.0.0")
 WEB_PANEL_PORT = int(os.getenv("WEB_PANEL_PORT", "18080"))
@@ -75,6 +77,12 @@ SERVICE_NOTIFY_OWNER = os.getenv("SERVICE_NOTIFY_OWNER", "true").lower() in {
 }
 MAX_LINKS_TEXT_BYTES = 5 * 1024 * 1024
 WEB_PANEL_PATH = re.sub(r"[^a-zA-Z0-9_-]", "", WEB_PANEL_PATH) or "panel"
+XUI_PRESET_PLANS: list[tuple[str, int, int]] = [
+    ("1GB | 30 روز", 1, 30),
+    ("5GB | 30 روز", 5, 30),
+    ("10GB | 30 روز", 10, 30),
+    ("20GB | 30 روز", 20, 30),
+]
 
 
 @dataclass
@@ -106,6 +114,10 @@ class XuiServerItem:
     username: str
     password: str
     is_active: bool
+    tls_verify: bool = True
+    last_check_at: Optional[str] = None
+    last_check_ok: Optional[bool] = None
+    last_check_error: str = ""
 
 
 @dataclass
@@ -230,12 +242,25 @@ class Storage:
                     username TEXT NOT NULL,
                     password TEXT NOT NULL,
                     is_active INTEGER NOT NULL DEFAULT 1,
+                    tls_verify INTEGER NOT NULL DEFAULT 1,
+                    last_check_at TEXT,
+                    last_check_ok INTEGER,
+                    last_check_error TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(panel_url, username)
                 )
                 """
             )
+            xui_columns = {row["name"] for row in conn.execute("PRAGMA table_info(xui_servers)").fetchall()}
+            if "tls_verify" not in xui_columns:
+                conn.execute("ALTER TABLE xui_servers ADD COLUMN tls_verify INTEGER NOT NULL DEFAULT 1")
+            if "last_check_at" not in xui_columns:
+                conn.execute("ALTER TABLE xui_servers ADD COLUMN last_check_at TEXT")
+            if "last_check_ok" not in xui_columns:
+                conn.execute("ALTER TABLE xui_servers ADD COLUMN last_check_ok INTEGER")
+            if "last_check_error" not in xui_columns:
+                conn.execute("ALTER TABLE xui_servers ADD COLUMN last_check_error TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS xui_batches (
@@ -567,18 +592,19 @@ class Storage:
 
     def upsert_xui_server(self, name: str, panel_url: str, username: str, password: str) -> int:
         safe_name = name.strip()[:80] or "server"
+        tls_default = 1 if XUI_DEFAULT_TLS_VERIFY else 0
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO xui_servers(name, panel_url, username, password, is_active, updated_at)
-                VALUES(?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                INSERT INTO xui_servers(name, panel_url, username, password, is_active, tls_verify, updated_at)
+                VALUES(?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(panel_url, username) DO UPDATE SET
                     name = excluded.name,
                     password = excluded.password,
                     is_active = 1,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (safe_name, panel_url.strip(), username.strip(), password),
+                (safe_name, panel_url.strip(), username.strip(), password, tls_default),
             )
             conn.commit()
             row = conn.execute(
@@ -591,7 +617,17 @@ class Storage:
 
     def list_xui_servers(self, only_active: bool = True) -> list[XuiServerItem]:
         query = """
-            SELECT id, name, panel_url, username, password, is_active
+            SELECT
+                id,
+                name,
+                panel_url,
+                username,
+                password,
+                is_active,
+                COALESCE(tls_verify, 1) AS tls_verify,
+                last_check_at,
+                last_check_ok,
+                COALESCE(last_check_error, '') AS last_check_error
             FROM xui_servers
         """
         if only_active:
@@ -607,6 +643,14 @@ class Storage:
                 username=str(row["username"]),
                 password=str(row["password"]),
                 is_active=bool(row["is_active"]),
+                tls_verify=bool(row["tls_verify"]),
+                last_check_at=str(row["last_check_at"]) if row["last_check_at"] is not None else None,
+                last_check_ok=(
+                    bool(row["last_check_ok"])
+                    if row["last_check_ok"] is not None
+                    else None
+                ),
+                last_check_error=str(row["last_check_error"] or ""),
             )
             for row in rows
         ]
@@ -615,7 +659,17 @@ class Storage:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, name, panel_url, username, password, is_active
+                SELECT
+                    id,
+                    name,
+                    panel_url,
+                    username,
+                    password,
+                    is_active,
+                    COALESCE(tls_verify, 1) AS tls_verify,
+                    last_check_at,
+                    last_check_ok,
+                    COALESCE(last_check_error, '') AS last_check_error
                 FROM xui_servers
                 WHERE id = ?
                 """,
@@ -630,6 +684,14 @@ class Storage:
             username=str(row["username"]),
             password=str(row["password"]),
             is_active=bool(row["is_active"]),
+            tls_verify=bool(row["tls_verify"]),
+            last_check_at=str(row["last_check_at"]) if row["last_check_at"] is not None else None,
+            last_check_ok=(
+                bool(row["last_check_ok"])
+                if row["last_check_ok"] is not None
+                else None
+            ),
+            last_check_error=str(row["last_check_error"] or ""),
         )
 
     def set_xui_server_active(self, server_id: int, is_active: bool) -> None:
@@ -641,6 +703,41 @@ class Storage:
                 WHERE id = ?
                 """,
                 (int(is_active), server_id),
+            )
+            conn.commit()
+
+    def set_xui_server_tls_verify(self, server_id: int, tls_verify: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE xui_servers
+                SET tls_verify = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (int(tls_verify), server_id),
+            )
+            conn.commit()
+
+    def mark_xui_server_check(
+        self,
+        server_id: int,
+        ok: bool,
+        error_text: str = "",
+        checked_at: Optional[str] = None,
+    ) -> None:
+        checked_value = checked_at or dt_to_str(utc_now())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE xui_servers
+                SET
+                    last_check_at = ?,
+                    last_check_ok = ?,
+                    last_check_error = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (checked_value, int(ok), error_text[:500], server_id),
             )
             conn.commit()
 
@@ -816,7 +913,14 @@ class XuiPanelClient:
         self.server = server
         self.base_url = _normalize_xui_panel_url(server.panel_url)
         self.cookie_jar = CookieJar()
-        self.opener = build_opener(HTTPCookieProcessor(self.cookie_jar))
+        if server.tls_verify:
+            self.opener = build_opener(HTTPCookieProcessor(self.cookie_jar))
+        else:
+            insecure_ctx = ssl._create_unverified_context()
+            self.opener = build_opener(
+                HTTPSHandler(context=insecure_ctx),
+                HTTPCookieProcessor(self.cookie_jar),
+            )
 
     def _request_json(
         self,
@@ -976,6 +1080,22 @@ def _parse_xui_generate_input(raw_text: str) -> tuple[Optional[int], Optional[in
     return count, total_gb, expire_days, prefix
 
 
+def _xui_plan_definitions() -> list[dict[str, object]]:
+    return [
+        {"key": "p1", "label": "پلن 1GB / 30 روز", "gb": 1, "days": 30},
+        {"key": "p5", "label": "پلن 5GB / 30 روز", "gb": 5, "days": 30},
+        {"key": "p10", "label": "پلن 10GB / 30 روز", "gb": 10, "days": 30},
+        {"key": "p30", "label": "پلن 30GB / 60 روز", "gb": 30, "days": 60},
+    ]
+
+
+def _xui_plan_by_key(plan_key: str) -> Optional[dict[str, object]]:
+    for plan in _xui_plan_definitions():
+        if str(plan.get("key")) == plan_key:
+            return plan
+    return None
+
+
 def _build_xui_servers_keyboard(storage: Storage) -> InlineKeyboardMarkup:
     servers = storage.list_xui_servers(only_active=False)
     rows: list[list[InlineKeyboardButton]] = []
@@ -984,7 +1104,12 @@ def _build_xui_servers_keyboard(storage: Storage) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(f"{state} {server.name}"[:64], callback_data=f"xui:server:{server.id}")]
         )
-    rows.append([InlineKeyboardButton("➕ افزودن سرور جدید", callback_data="xui:add_server")])
+    rows.append(
+        [
+            InlineKeyboardButton("➕ افزودن سرور جدید", callback_data="xui:add_server"),
+            InlineKeyboardButton("🩺 تست همه", callback_data="xui:test_all"),
+        ]
+    )
     rows.append([InlineKeyboardButton("⬅️ بازگشت", callback_data="menu:back")])
     return InlineKeyboardMarkup(rows)
 
@@ -1019,6 +1144,36 @@ def _build_xui_generate_confirm_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("❌ لغو", callback_data="menu:back")],
         ]
     )
+
+
+def _build_xui_plan_keyboard(server_id: int, inbound_id: int) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for plan in _xui_plan_definitions():
+        key = str(plan.get("key"))
+        label = str(plan.get("label", key))
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"⚡ {label}"[:64],
+                    callback_data=f"xui:plan:{server_id}:{inbound_id}:{key}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("⬅️ بازگشت", callback_data=f"xui:server:{server_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_xui_server_actions_keyboard(server: XuiServerItem) -> InlineKeyboardMarkup:
+    tls_text = "TLS: روشن" if server.tls_verify else "TLS: خاموش"
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("📥 انتخاب Inbound", callback_data=f"xui:server:{server.id}")],
+        [
+            InlineKeyboardButton("🩺 تست این سرور", callback_data=f"xui:server:{server.id}"),
+            InlineKeyboardButton(tls_text, callback_data=f"xui:toggle_tls:{server.id}"),
+        ],
+        [InlineKeyboardButton("⬅️ بازگشت به لیست سرورها", callback_data="menu:xui_servers")],
+    ]
+    return InlineKeyboardMarkup(rows)
 
 class BroadcastManager:
     def __init__(self, application: Application, storage: Storage, max_concurrent: int) -> None:
@@ -1734,6 +1889,7 @@ def _clear_xui_state(context: ContextTypes.DEFAULT_TYPE) -> None:
         "xui_selected_server_id",
         "xui_selected_inbound_id",
         "xui_pending_generate",
+        "xui_selected_plan_key",
     ):
         context.user_data.pop(key, None)
 
@@ -1792,6 +1948,35 @@ async def _handle_xui_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return True
 
+    if data == "xui:test_all":
+        servers = storage.list_xui_servers(only_active=False)
+        if not servers:
+            await query.answer("هیچ سروری ثبت نشده.", show_alert=True)
+            return True
+        await query.edit_message_text("در حال تست اتصال همه سرورها... لطفا صبر کن.")
+        lines = ["نتیجه تست سرورها:"]
+        for index, server in enumerate(servers, start=1):
+            try:
+                api = XuiPanelClient(server)
+                api.login()
+                inbounds = api.list_inbounds()
+                storage.mark_xui_server_check(server.id, ok=True, error_text="")
+                mode = "strict" if server.tls_verify else "relaxed"
+                lines.append(
+                    f"{index}. ✅ {server.name} | inbounds={len(inbounds)} | tls={mode}"
+                )
+            except Exception as exc:
+                storage.mark_xui_server_check(server.id, ok=False, error_text=str(exc))
+                lines.append(
+                    f"{index}. ❌ {server.name} | {_shorten_text(str(exc), 180)}"
+                )
+        await query.message.reply_text("\n".join(lines)[:4000])
+        await query.message.reply_text(
+            "مدیریت سرورها:",
+            reply_markup=_build_xui_servers_keyboard(storage),
+        )
+        return True
+
     if data.startswith("xui:server:"):
         try:
             server_id = int(data.split(":")[2])
@@ -1806,7 +1991,9 @@ async def _handle_xui_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             api = XuiPanelClient(server)
             api.login()
             inbounds = api.list_inbounds()
+            storage.mark_xui_server_check(server.id, ok=True, error_text="")
         except Exception as exc:
+            storage.mark_xui_server_check(server.id, ok=False, error_text=str(exc))
             await query.edit_message_text(
                 f"اتصال به پنل ناموفق بود:\n{_shorten_text(str(exc), 500)}",
                 reply_markup=_build_xui_servers_keyboard(storage),
@@ -1814,8 +2001,84 @@ async def _handle_xui_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             return True
         context.user_data["xui_selected_server_id"] = server_id
         await query.edit_message_text(
-            f"سرور: {server.name}\nیک inbound انتخاب کن.",
+            f"سرور: {server.name}\n"
+            f"TLS Verify: {'روشن' if server.tls_verify else 'خاموش'}\n"
+            "یک inbound انتخاب کن.",
             reply_markup=_build_xui_inbounds_keyboard(server_id, inbounds),
+        )
+        return True
+
+    if data.startswith("xui:toggle_tls:"):
+        try:
+            server_id = int(data.split(":")[2])
+        except (IndexError, ValueError):
+            await query.answer("شناسه سرور نامعتبر است.", show_alert=True)
+            return True
+        server = storage.get_xui_server(server_id)
+        if not server:
+            await query.answer("سرور پیدا نشد.", show_alert=True)
+            return True
+        new_value = not server.tls_verify
+        storage.set_xui_server_tls_verify(server_id, new_value)
+        await query.answer(
+            f"TLS Verify {'روشن' if new_value else 'خاموش'} شد.",
+            show_alert=True,
+        )
+        try:
+            refreshed = storage.get_xui_server(server_id)
+            if refreshed is None:
+                raise RuntimeError("سرور یافت نشد.")
+            api = XuiPanelClient(refreshed)
+            api.login()
+            inbounds = api.list_inbounds()
+            storage.mark_xui_server_check(refreshed.id, ok=True, error_text="")
+        except Exception as exc:
+            storage.mark_xui_server_check(server_id, ok=False, error_text=str(exc))
+            await query.edit_message_text(
+                f"بعد از تغییر TLS اتصال ناموفق بود:\n{_shorten_text(str(exc), 500)}",
+                reply_markup=_build_xui_servers_keyboard(storage),
+            )
+            return True
+        await query.edit_message_text(
+            f"سرور: {refreshed.name}\n"
+            f"TLS Verify: {'روشن' if refreshed.tls_verify else 'خاموش'}\n"
+            "یک inbound انتخاب کن.",
+            reply_markup=_build_xui_inbounds_keyboard(server_id, inbounds),
+        )
+        return True
+
+    if data.startswith("xui:plan:"):
+        parts = data.split(":")
+        if len(parts) != 5:
+            await query.answer("پارامتر پلن نامعتبر است.", show_alert=True)
+            return True
+        plan_key = parts[2].strip()
+        try:
+            server_id = int(parts[3])
+            inbound_id = int(parts[4])
+        except ValueError:
+            await query.answer("پارامتر پلن نامعتبر است.", show_alert=True)
+            return True
+        plan = _xui_plan_by_key(plan_key)
+        if not plan:
+            await query.answer("پلن پیدا نشد.", show_alert=True)
+            return True
+        server = storage.get_xui_server(server_id)
+        if not server:
+            await query.answer("سرور پیدا نشد.", show_alert=True)
+            return True
+        context.user_data["xui_selected_server_id"] = server_id
+        context.user_data["xui_selected_inbound_id"] = inbound_id
+        context.user_data["awaiting_xui_generate"] = True
+        context.user_data["xui_selected_plan_key"] = plan_key
+        await query.edit_message_text(
+            f"پلن انتخاب شد: {plan['label']}\n"
+            f"سرور: {server.name}\n"
+            f"Inbound: {inbound_id}\n\n"
+            "حالا فقط تعداد و prefix را بفرست:\n"
+            "<count> | <prefix>\n\n"
+            "مثال:\n30 | se4-a",
+            reply_markup=_build_xui_back_keyboard(),
         )
         return True
 
@@ -1834,6 +2097,7 @@ async def _handle_xui_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data["xui_selected_server_id"] = server_id
         context.user_data["xui_selected_inbound_id"] = inbound_id
         context.user_data["awaiting_xui_generate"] = True
+        context.user_data.pop("xui_selected_plan_key", None)
         await query.edit_message_text(
             f"سرور: {server.name}\nInbound: {inbound_id}\n\n"
             "حالا پارامتر ساخت را بفرست:\n"
@@ -1862,10 +2126,12 @@ async def _handle_xui_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("در حال ساخت کلاینت‌ها... لطفا صبر کن.")
         created_items: list[dict] = []
         failed_count = 0
+        failed_items: list[str] = []
         try:
             api = XuiPanelClient(server)
             api.login()
-            created_items = api.add_clients_batch(
+            storage.mark_xui_server_check(server.id, ok=True, error_text="")
+            created_items, failed_items = api.add_clients_batch(
                 inbound_id=inbound_id,
                 count=count,
                 total_gb=total_gb,
@@ -1873,15 +2139,18 @@ async def _handle_xui_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 prefix=prefix,
             )
         except Exception as exc:
+            storage.mark_xui_server_check(server.id, ok=False, error_text=str(exc))
             failed_count = count - len(created_items)
             await query.message.reply_text(
                 f"ساخت دسته‌ای ناموفق بود:\n{_shorten_text(str(exc), 600)}",
                 reply_markup=_build_xui_inbounds_keyboard(server_id, []),
             )
         else:
+            failed_count = len(failed_items)
             await query.message.reply_text(
                 "ساخت دسته‌ای کامل شد ✅\n"
                 f"تعداد ساخته‌شده: {len(created_items)}\n"
+                f"ناموفق: {failed_count}\n"
                 f"سرور: {server.name}\n"
                 f"Inbound: {inbound_id}"
             )
@@ -1892,6 +2161,11 @@ async def _handle_xui_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 inbound_label=str(inbound_id),
                 created_items=created_items,
             )
+            if failed_items:
+                await query.message.reply_text(
+                    "چند خطای اول ساخت:\n"
+                    + "\n".join(f"- {item}" for item in failed_items[:8])
+                )
         finally:
             storage.add_xui_batch_log(
                 server_id=server_id,
@@ -2741,6 +3015,51 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     if context.user_data.get("awaiting_xui_generate"):
         raw_text = (update.effective_message.text or "").strip()
+        selected_plan_key = context.user_data.get("xui_selected_plan_key")
+        if selected_plan_key:
+            plan = _xui_plan_by_key(str(selected_plan_key))
+            if plan:
+                try:
+                    count = int(raw_text)
+                except ValueError:
+                    await update.effective_message.reply_text("برای پلن آماده فقط تعداد را عددی بفرست.")
+                    return
+                if count <= 0 or count > 300:
+                    await update.effective_message.reply_text("تعداد باید بین 1 تا 300 باشد.")
+                    return
+                total_gb = int(plan["gb"])
+                expire_days = int(plan["days"])
+                prefix = re.sub(r"[^a-zA-Z0-9._-]", "", f"{selected_plan_key}-u")[:24] or "u"
+                server_id = context.user_data.get("xui_selected_server_id")
+                inbound_id = context.user_data.get("xui_selected_inbound_id")
+                if not isinstance(server_id, int) or not isinstance(inbound_id, int):
+                    await update.effective_message.reply_text(
+                        "ابتدا سرور و inbound را از پنل انتخاب کن.",
+                        reply_markup=build_main_menu_keyboard(),
+                    )
+                    _clear_xui_state(context)
+                    return
+                context.user_data["xui_pending_generate"] = {
+                    "server_id": server_id,
+                    "inbound_id": inbound_id,
+                    "count": count,
+                    "total_gb": total_gb,
+                    "expire_days": expire_days,
+                    "prefix": prefix,
+                    "plan_key": selected_plan_key,
+                }
+                context.user_data["awaiting_xui_generate"] = False
+                await update.effective_message.reply_text(
+                    "پیش‌نمایش ساخت:\n"
+                    f"- پلن: {plan['label']}\n"
+                    f"- تعداد: {count}\n"
+                    f"- حجم هر کلاینت: {total_gb} GB\n"
+                    f"- انقضا: {expire_days} روز\n"
+                    f"- prefix: {prefix}\n\n"
+                    "برای ساخت، دکمه تایید را بزن.",
+                    reply_markup=_build_xui_generate_confirm_keyboard(),
+                )
+                return
         parts = [part.strip() for part in raw_text.split("|")]
         if len(parts) != 4:
             await update.effective_message.reply_text(
