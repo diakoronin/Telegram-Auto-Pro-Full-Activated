@@ -69,6 +69,12 @@ WEB_PANEL_REQUIRE_LOGIN = bool(WEB_PANEL_USERNAME and WEB_PANEL_PASSWORD)
 WEB_PANEL_SESSION_SECRET = os.getenv("WEB_PANEL_SESSION_SECRET", "").strip()
 OWNER_ID_ENV = os.getenv("OWNER_ID", "").strip()
 STRICT_OWNER_ONLY = os.getenv("STRICT_OWNER_ONLY", "true").lower() in {"1", "true", "yes", "on"}
+WALLET_PAYMENT_INFO = os.getenv(
+    "WALLET_PAYMENT_INFO",
+    "برای شارژ کیف پول، مبلغ را به حساب شما واریز کنید و درخواست شارژ را ثبت کنید.",
+).strip()
+WALLET_TOPUP_MIN = max(int(os.getenv("WALLET_TOPUP_MIN", "10000")), 1000)
+MAX_USER_ORDER_PREVIEW = max(int(os.getenv("MAX_USER_ORDER_PREVIEW", "8")), 3)
 SERVICE_NOTIFY_OWNER = os.getenv("SERVICE_NOTIFY_OWNER", "true").lower() in {
     "1",
     "true",
@@ -277,6 +283,87 @@ class Storage:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id INTEGER PRIMARY KEY,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    full_name TEXT,
+                    wallet_balance INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wallet_transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    amount INTEGER NOT NULL,
+                    tx_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'done',
+                    note TEXT NOT NULL DEFAULT '',
+                    related_order_id INTEGER,
+                    related_tx_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_services (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    price INTEGER NOT NULL,
+                    volume_gb INTEGER NOT NULL,
+                    duration_days INTEGER NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    service_id INTEGER,
+                    order_type TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_services (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    service_id INTEGER,
+                    order_id INTEGER,
+                    server_id INTEGER,
+                    inbound_id INTEGER,
+                    client_email TEXT,
+                    sub_link TEXT,
+                    expires_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.commit()
 
     def set_setting(self, key: str, value: str) -> None:
@@ -306,6 +393,573 @@ class Storage:
             return int(raw_value)
         except ValueError:
             return None
+
+    def list_admin_ids(self) -> list[int]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT user_id FROM admins ORDER BY user_id").fetchall()
+        return [int(row["user_id"]) for row in rows]
+
+    def is_admin_id(self, user_id: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,)).fetchone()
+        return row is not None
+
+    def add_admin_id(self, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO admins(user_id) VALUES(?)",
+                (int(user_id),),
+            )
+            conn.commit()
+
+    def remove_admin_id(self, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM admins WHERE user_id = ?", (int(user_id),))
+            conn.commit()
+
+    def ensure_user(self, user_id: int, username: str = "", full_name: str = "") -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO users(user_id, username, full_name, wallet_balance, updated_at)
+                VALUES(?, ?, ?, 0, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = excluded.username,
+                    full_name = excluded.full_name,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (int(user_id), username[:120], full_name[:120]),
+            )
+            conn.commit()
+
+    def get_user_profile(self, user_id: int) -> Optional[sqlite3.Row]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT user_id, username, full_name, wallet_balance, created_at, updated_at
+                FROM users
+                WHERE user_id = ?
+                """,
+                (int(user_id),),
+            ).fetchone()
+        return row
+
+    def adjust_wallet_balance(
+        self,
+        user_id: int,
+        delta: int,
+        tx_type: str,
+        note: str = "",
+        related_order_id: Optional[int] = None,
+        related_tx_id: Optional[int] = None,
+    ) -> tuple[bool, int, int]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT wallet_balance FROM users WHERE user_id = ?",
+                (int(user_id),),
+            ).fetchone()
+            if not row:
+                conn.execute(
+                    """
+                    INSERT INTO users(user_id, username, full_name, wallet_balance, updated_at)
+                    VALUES(?, '', '', 0, CURRENT_TIMESTAMP)
+                    """,
+                    (int(user_id),),
+                )
+                current_balance = 0
+            else:
+                current_balance = int(row["wallet_balance"])
+            new_balance = current_balance + int(delta)
+            if new_balance < 0:
+                return False, current_balance, 0
+            conn.execute(
+                """
+                UPDATE users
+                SET wallet_balance = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                """,
+                (new_balance, int(user_id)),
+            )
+            cursor = conn.execute(
+                """
+                INSERT INTO wallet_transactions(
+                    user_id, amount, tx_type, status, note, related_order_id, related_tx_id
+                )
+                VALUES(?, ?, ?, 'done', ?, ?, ?)
+                """,
+                (
+                    int(user_id),
+                    int(delta),
+                    tx_type[:60],
+                    note[:500],
+                    related_order_id,
+                    related_tx_id,
+                ),
+            )
+            conn.commit()
+            return True, new_balance, int(cursor.lastrowid or 0)
+
+    def create_deposit_request(self, user_id: int, amount: int, note: str = "") -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO wallet_transactions(user_id, amount, tx_type, status, note)
+                VALUES(?, ?, 'deposit_request', 'pending', ?)
+                """,
+                (int(user_id), int(amount), note[:500]),
+            )
+            conn.commit()
+            return int(cursor.lastrowid or 0)
+
+    def get_wallet_transaction(self, tx_id: int) -> Optional[sqlite3.Row]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, user_id, amount, tx_type, status, note, related_order_id, related_tx_id, created_at
+                FROM wallet_transactions
+                WHERE id = ?
+                """,
+                (int(tx_id),),
+            ).fetchone()
+        return row
+
+    def approve_deposit_request(self, tx_id: int, admin_id: int) -> tuple[bool, str, Optional[int], int]:
+        tx = self.get_wallet_transaction(tx_id)
+        if not tx:
+            return False, "درخواست یافت نشد.", None, 0
+        if tx["tx_type"] != "deposit_request" or tx["status"] != "pending":
+            return False, "این درخواست قبلا بررسی شده است.", int(tx["user_id"]), 0
+        user_id = int(tx["user_id"])
+        amount = int(tx["amount"])
+        ok, new_balance, _ = self.adjust_wallet_balance(
+            user_id=user_id,
+            delta=amount,
+            tx_type="deposit_approved",
+            note=f"approved_by:{admin_id} request:{tx_id}",
+            related_tx_id=tx_id,
+        )
+        if not ok:
+            return False, "خطا در شارژ کیف پول.", user_id, 0
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE wallet_transactions
+                SET status = 'approved',
+                    note = substr(note || ' | approved_by:' || ?, 1, 500)
+                WHERE id = ?
+                """,
+                (str(admin_id), int(tx_id)),
+            )
+            conn.commit()
+        return True, "واریزی تایید و کیف پول شارژ شد.", user_id, new_balance
+
+    def reject_deposit_request(self, tx_id: int, admin_id: int, reason: str = "") -> tuple[bool, str, Optional[int]]:
+        tx = self.get_wallet_transaction(tx_id)
+        if not tx:
+            return False, "درخواست یافت نشد.", None
+        if tx["tx_type"] != "deposit_request" or tx["status"] != "pending":
+            return False, "این درخواست قبلا بررسی شده است.", int(tx["user_id"])
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE wallet_transactions
+                SET status = 'rejected',
+                    note = substr(note || ' | rejected_by:' || ? || ' ' || ?, 1, 500)
+                WHERE id = ?
+                """,
+                (str(admin_id), reason[:120], int(tx_id)),
+            )
+            conn.commit()
+        return True, "درخواست واریز رد شد.", int(tx["user_id"])
+
+    def list_pending_deposit_requests(self, limit: int = 30) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, user_id, amount, status, note, created_at
+                FROM wallet_transactions
+                WHERE tx_type = 'deposit_request' AND status = 'pending'
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+        return list(rows)
+
+    def list_user_wallet_transactions(self, user_id: int, limit: int = 20) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, amount, tx_type, status, note, created_at
+                FROM wallet_transactions
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(user_id), max(1, min(limit, 200))),
+            ).fetchall()
+        return list(rows)
+
+    def add_catalog_service(self, title: str, price: int, volume_gb: int, duration_days: int) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO catalog_services(title, price, volume_gb, duration_days, is_active, updated_at)
+                VALUES(?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                """,
+                (title[:120], int(price), int(volume_gb), int(duration_days)),
+            )
+            conn.commit()
+            return int(cursor.lastrowid or 0)
+
+    def list_catalog_services(self, only_active: bool = False) -> list[sqlite3.Row]:
+        query = """
+            SELECT id, title, price, volume_gb, duration_days, is_active, created_at, updated_at
+            FROM catalog_services
+        """
+        if only_active:
+            query += " WHERE is_active = 1"
+        query += " ORDER BY id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query).fetchall()
+        return list(rows)
+
+    def get_catalog_service(self, service_id: int) -> Optional[sqlite3.Row]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, title, price, volume_gb, duration_days, is_active
+                FROM catalog_services
+                WHERE id = ?
+                """,
+                (int(service_id),),
+            ).fetchone()
+        return row
+
+    def set_catalog_service_active(self, service_id: int, is_active: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE catalog_services
+                SET is_active = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (int(is_active), int(service_id)),
+            )
+            conn.commit()
+
+    def create_order(
+        self,
+        user_id: int,
+        service_id: Optional[int],
+        order_type: str,
+        amount: int,
+        status: str,
+        detail: str = "",
+    ) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO orders(user_id, service_id, order_type, amount, status, detail, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    int(user_id),
+                    int(service_id) if service_id is not None else None,
+                    order_type[:32],
+                    int(amount),
+                    status[:32],
+                    detail[:1000],
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid or 0)
+
+    def update_order_status(self, order_id: int, status: str, detail: str = "") -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE orders
+                SET status = ?, detail = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (status[:32], detail[:1000], int(order_id)),
+            )
+            conn.commit()
+
+    def get_order(self, order_id: int) -> Optional[sqlite3.Row]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, user_id, service_id, order_type, amount, status, detail, created_at, updated_at
+                FROM orders
+                WHERE id = ?
+                """,
+                (int(order_id),),
+            ).fetchone()
+        return row
+
+    def list_orders(self, limit: int = 80) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, user_id, service_id, order_type, amount, status, detail, created_at, updated_at
+                FROM orders
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return list(rows)
+
+    def list_user_orders(self, user_id: int, limit: int = 20) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, service_id, order_type, amount, status, detail, created_at, updated_at
+                FROM orders
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(user_id), max(1, min(limit, 200))),
+            ).fetchall()
+        return list(rows)
+
+    def count_user_orders(self, user_id: int) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM orders WHERE user_id = ?",
+                (int(user_id),),
+            ).fetchone()
+        return int(row["total"] if row else 0)
+
+    def list_orders(self, limit: int = 50, user_id: Optional[int] = None) -> list[sqlite3.Row]:
+        base_query = """
+            SELECT id, user_id, service_id, order_type, amount, status, detail, created_at, updated_at
+            FROM orders
+        """
+        params: list[object] = []
+        if user_id is not None:
+            base_query += " WHERE user_id = ?"
+            params.append(int(user_id))
+        base_query += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self._connect() as conn:
+            rows = conn.execute(base_query, tuple(params)).fetchall()
+        return list(rows)
+
+    def get_order(self, order_id: int) -> Optional[sqlite3.Row]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, user_id, service_id, order_type, amount, status, detail, created_at, updated_at
+                FROM orders
+                WHERE id = ?
+                """,
+                (int(order_id),),
+            ).fetchone()
+        return row
+
+    def list_order_anomalies(self, limit: int = 50) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    o.id,
+                    o.user_id,
+                    o.order_type,
+                    o.amount,
+                    o.status,
+                    o.detail,
+                    o.created_at,
+                    (
+                        SELECT COUNT(1)
+                        FROM wallet_transactions wt
+                        WHERE wt.related_order_id = o.id
+                          AND wt.tx_type = 'purchase_debit'
+                          AND wt.status = 'done'
+                    ) AS debit_count,
+                    (
+                        SELECT COUNT(1)
+                        FROM wallet_transactions wt
+                        WHERE wt.related_order_id = o.id
+                          AND wt.tx_type = 'purchase_refund'
+                          AND wt.status = 'done'
+                    ) AS refund_count,
+                    (
+                        SELECT COUNT(1)
+                        FROM user_services us
+                        WHERE us.order_id = o.id
+                    ) AS service_count
+                FROM orders o
+                WHERE o.order_type IN ('buy', 'renew')
+                ORDER BY o.id DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        anomalies: list[dict[str, object]] = []
+        for row in rows:
+            status = str(row["status"] or "")
+            debit_count = int(row["debit_count"] or 0)
+            refund_count = int(row["refund_count"] or 0)
+            service_count = int(row["service_count"] or 0)
+            issue = ""
+            if status == "delivered" and debit_count == 0:
+                issue = "سرویس تحویل شده ولی برداشت کیف پول ثبت نشده"
+            elif status == "delivered" and service_count == 0:
+                issue = "سفارش تحویل‌شده است اما سرویس ثبت نشده"
+            elif status.startswith("failed") and debit_count > refund_count:
+                issue = "برداشت انجام شده ولی ریفاند کامل نشده"
+            elif status in {"provisioning", "paid"} and debit_count == 0:
+                issue = "وضعیت پرداخت نامعتبر (پرداخت ثبت نشده)"
+            if issue:
+                anomalies.append(
+                    {
+                        "order_id": int(row["id"]),
+                        "user_id": int(row["user_id"]),
+                        "order_type": str(row["order_type"]),
+                        "amount": int(row["amount"]),
+                        "status": status,
+                        "issue": issue,
+                        "detail": str(row["detail"] or ""),
+                        "created_at": str(row["created_at"] or ""),
+                    }
+                )
+        return anomalies
+
+    def add_user_service(
+        self,
+        user_id: int,
+        service_id: Optional[int],
+        order_id: Optional[int],
+        server_id: Optional[int],
+        inbound_id: Optional[int],
+        client_email: str,
+        sub_link: str,
+        expires_at: Optional[str],
+        status: str = "active",
+    ) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO user_services(
+                    user_id, service_id, order_id, server_id, inbound_id,
+                    client_email, sub_link, expires_at, status
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(user_id),
+                    int(service_id) if service_id is not None else None,
+                    int(order_id) if order_id is not None else None,
+                    int(server_id) if server_id is not None else None,
+                    int(inbound_id) if inbound_id is not None else None,
+                    client_email[:120],
+                    sub_link[:500],
+                    (expires_at or "")[:64] or None,
+                    status[:32],
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid or 0)
+
+    def list_user_services(self, user_id: int, limit: int = 30) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, service_id, order_id, server_id, inbound_id, client_email, sub_link, expires_at, status, created_at
+                FROM user_services
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(user_id), max(1, min(limit, 200))),
+            ).fetchall()
+        return list(rows)
+
+    def count_user_services(self, user_id: int) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM user_services WHERE user_id = ?",
+                (int(user_id),),
+            ).fetchone()
+        return int(row["total"] if row else 0)
+
+    def get_user_service(self, service_instance_id: int) -> Optional[sqlite3.Row]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, user_id, service_id, order_id, server_id, inbound_id, client_email, sub_link, expires_at, status
+                FROM user_services
+                WHERE id = ?
+                """,
+                (int(service_instance_id),),
+            ).fetchone()
+        return row
+
+    def list_recent_order_audit(self, limit: int = 120) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    o.id,
+                    o.user_id,
+                    o.order_type,
+                    o.amount,
+                    o.status,
+                    o.created_at,
+                    COALESCE(SUM(CASE WHEN wt.tx_type IN ('order_debit', 'order_purchase_debit', 'order_renew_debit')
+                        THEN wt.amount ELSE 0 END), 0) AS debit_sum,
+                    COALESCE(SUM(CASE WHEN wt.tx_type = 'order_refund' THEN wt.amount ELSE 0 END), 0) AS refund_sum,
+                    (
+                        SELECT COUNT(*) FROM user_services us
+                        WHERE us.order_id = o.id
+                    ) AS service_count
+                FROM orders o
+                LEFT JOIN wallet_transactions wt ON wt.related_order_id = o.id
+                GROUP BY o.id
+                ORDER BY o.id DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 1000)),),
+            ).fetchall()
+        return list(rows)
+
+    def update_user_service_expiry(
+        self,
+        service_instance_id: int,
+        expires_at: Optional[str],
+        status: str = "active",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE user_services
+                SET expires_at = ?, status = ?
+                WHERE id = ?
+                """,
+                ((expires_at or "")[:64] or None, status[:32], int(service_instance_id)),
+            )
+            conn.commit()
+
+    def set_default_xui_route(self, server_id: int, inbound_id: int) -> None:
+        self.set_setting("xui_default_server_id", str(int(server_id)))
+        self.set_setting("xui_default_inbound_id", str(int(inbound_id)))
+
+    def get_default_xui_route(self) -> tuple[Optional[int], Optional[int]]:
+        raw_server = self.get_setting("xui_default_server_id")
+        raw_inbound = self.get_setting("xui_default_inbound_id")
+        try:
+            server_id = int(raw_server) if raw_server is not None else None
+        except ValueError:
+            server_id = None
+        try:
+            inbound_id = int(raw_inbound) if raw_inbound is not None else None
+        except ValueError:
+            inbound_id = None
+        return server_id, inbound_id
 
     def upsert_group(
         self,
@@ -1539,6 +2193,29 @@ def get_owner_id(application: Application) -> Optional[int]:
     return get_storage(application).get_owner_id()
 
 
+def is_owner_id(application: Application, user_id: int) -> bool:
+    owner_id = get_owner_id(application)
+    configured_owner = application.bot_data.get("configured_owner_id")
+    if configured_owner and owner_id != configured_owner:
+        get_storage(application).set_owner_id(configured_owner)
+        owner_id = configured_owner
+    return bool(owner_id and int(owner_id) == int(user_id))
+
+
+def is_admin_id(application: Application, user_id: int) -> bool:
+    if is_owner_id(application, user_id):
+        return True
+    return get_storage(application).is_admin_id(int(user_id))
+
+
+def ensure_admin_bootstrap(storage: Storage, configured_owner_id: Optional[int]) -> None:
+    owner_id = configured_owner_id if configured_owner_id is not None else storage.get_owner_id()
+    if owner_id is None:
+        return
+    if not storage.is_admin_id(owner_id):
+        storage.add_admin_id(owner_id)
+
+
 def get_ui_message_id(application: Application) -> Optional[int]:
     raw_value = get_storage(application).get_setting("ui_message_id")
     if raw_value is None:
@@ -1621,27 +2298,39 @@ def sync_owner_from_env(storage: Storage) -> Optional[int]:
 
 async def owner_required(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     owner_id = get_owner_id(context.application)
-    configured_owner = context.application.bot_data.get("configured_owner_id")
     user = update.effective_user
     chat = update.effective_chat
 
     if user is None:
         return False
 
-    if configured_owner and owner_id != configured_owner:
-        get_storage(context.application).set_owner_id(configured_owner)
-        owner_id = configured_owner
-
     if owner_id is None:
         if chat and chat.type == ChatType.PRIVATE and update.effective_message:
             await update.effective_message.reply_text("مالک هنوز تنظیم نشده است. ابتدا در پی‌وی /claim را بزن.")
         return False
 
-    if user.id != owner_id:
+    if not is_admin_id(context.application, user.id):
         if chat and chat.type == ChatType.PRIVATE and update.effective_message:
-            await update.effective_message.reply_text("فقط مالک ربات اجازه اجرای این دستور را دارد.")
+            await update.effective_message.reply_text("فقط ادمین‌های ربات اجازه اجرای این بخش را دارند.")
         return False
 
+    return True
+
+
+async def strict_owner_required(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    owner_id = get_owner_id(context.application)
+    user = update.effective_user
+    chat = update.effective_chat
+    if user is None:
+        return False
+    if owner_id is None:
+        if chat and chat.type == ChatType.PRIVATE and update.effective_message:
+            await update.effective_message.reply_text("مالک هنوز تنظیم نشده است. ابتدا در پی‌وی /claim را بزن.")
+        return False
+    if not is_owner_id(context.application, user.id):
+        if chat and chat.type == ChatType.PRIVATE and update.effective_message:
+            await update.effective_message.reply_text("فقط مالک اصلی ربات اجازه این عملیات را دارد.")
+        return False
     return True
 
 
@@ -1693,23 +2382,46 @@ def _shorten_text(value: str, limit: int = 90) -> str:
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if STRICT_OWNER_ONLY and not await owner_required(update, context):
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat and chat.type == ChatType.PRIVATE:
+        if user:
+            get_storage(context.application).ensure_user(
+                user_id=user.id,
+                username=user.username or "",
+                full_name=(user.full_name or user.first_name or "")[:120],
+            )
+        await send_home_menu(update, context, text="ربات آماده است. از دکمه‌ها استفاده کن.")
         return
-    if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE:
-        await send_main_menu(update, context, text="پنل ربات آماده است. از دکمه‌ها استفاده کن.")
+    if STRICT_OWNER_ONLY and not await owner_required(update, context):
         return
     await update.effective_message.reply_text("بعد از افزودن و ادمین کردن ربات، در همین گروه /register بزن.")
 
 
 async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await open_main_menu(update, context)
+    await send_home_menu(update, context, text="پنل اصلی ربات")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if STRICT_OWNER_ONLY and not await owner_required(update, context):
+    user = update.effective_user
+    if not user:
+        return
+    admin_user = is_admin_id(context.application, user.id)
+    if update.effective_chat and update.effective_chat.type != ChatType.PRIVATE:
+        if STRICT_OWNER_ONLY and not admin_user:
+            return
+    if not admin_user:
+        text = (
+            "راهنمای کاربر:\n"
+            "/start - نمایش منوی اصلی\n"
+            "/panel - نمایش منوی اصلی\n"
+            "/cancel - لغو حالت انتظار\n\n"
+            "از دکمه‌های «شارژ کیف پول»، «خرید سرویس» و «سرویس‌های من» استفاده کن."
+        )
+        await update.effective_message.reply_text(text)
         return
     text = (
-        "دستورات خصوصی:\n"
+        "راهنمای ادمین:\n"
         "/claim - ثبت مالک (فقط بار اول)\n"
         "/whoami - نمایش آیدی تلگرام شما\n"
         "/setlinks - ثبت لینک‌ها (هر خط یک لینک)\n"
@@ -1733,6 +2445,77 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/register - ثبت همین گروه در لیست"
     )
     await update.effective_message.reply_text(text)
+
+
+def build_home_menu_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("👤 پنل کاربری", callback_data="root:user")],
+    ]
+    if is_admin:
+        rows.append([InlineKeyboardButton("🛠 پنل مدیریت", callback_data="root:admin")])
+    rows.append([InlineKeyboardButton("🔄 بروزرسانی", callback_data="root:refresh")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_user_menu_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton("💰 کیف پول", callback_data="usr:wallet"),
+            InlineKeyboardButton("🧾 سرویس‌های من", callback_data="usr:my_services"),
+        ],
+        [
+            InlineKeyboardButton("🛍 خرید سرویس", callback_data="usr:catalog"),
+            InlineKeyboardButton("📦 سفارش‌های من", callback_data="usr:my_orders"),
+        ],
+        [
+            InlineKeyboardButton("➕ درخواست شارژ کیف پول", callback_data="usr:deposit"),
+            InlineKeyboardButton("📊 گردش کیف پول", callback_data="usr:wallet_logs"),
+        ],
+    ]
+    if is_admin:
+        rows.append([InlineKeyboardButton("🛠 پنل مدیریت", callback_data="root:admin")])
+    rows.append([InlineKeyboardButton("⬅️ خانه", callback_data="root:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_admin_menu_keyboard(is_owner: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("📡 پنل ارسال گروهی", callback_data="adm:broadcast_panel")],
+        [InlineKeyboardButton("💳 درخواست‌های شارژ", callback_data="adm:deposits")],
+        [InlineKeyboardButton("🔍 جستجوی کاربر", callback_data="adm:user_search")],
+        [InlineKeyboardButton("🧪 مانیتور مالی/تحویل", callback_data="adm:audit")],
+        [InlineKeyboardButton("🛍 مدیریت کاتالوگ سرویس", callback_data="adm:catalog")],
+        [InlineKeyboardButton("📋 لیست ادمین‌ها", callback_data="adm:list_admins")],
+    ]
+    if is_owner:
+        rows.append(
+            [
+                InlineKeyboardButton("➕ افزودن ادمین", callback_data="adm:add_admin"),
+                InlineKeyboardButton("➖ حذف ادمین", callback_data="adm:remove_admin"),
+            ]
+        )
+    rows.append([InlineKeyboardButton("⬅️ خانه", callback_data="root:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _user_label(user: Optional[object]) -> tuple[str, str]:
+    if not user:
+        return "", ""
+    username = str(getattr(user, "username", "") or "")
+    full_name = str(getattr(user, "full_name", "") or getattr(user, "first_name", "") or "")
+    return username[:120], full_name[:120]
+
+
+def _ensure_default_catalog(storage: Storage) -> None:
+    if storage.list_catalog_services():
+        return
+    defaults = [
+        ("پلن 1GB | 30 روز", 120000, 1, 30),
+        ("پلن 5GB | 30 روز", 360000, 5, 30),
+        ("پلن 10GB | 30 روز", 650000, 10, 30),
+    ]
+    for title, price, gb, days in defaults:
+        storage.add_catalog_service(title=title, price=price, volume_gb=gb, duration_days=days)
 
 
 def build_main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -1788,10 +2571,6 @@ async def open_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.effective_message.reply_text(text, reply_markup=build_main_menu_keyboard())
 
 
-async def panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await open_main_menu(update, context)
-
-
 async def send_main_menu(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1800,6 +2579,10 @@ async def send_main_menu(
     if not await owner_required(update, context):
         return
     await update.effective_message.reply_text(text, reply_markup=build_main_menu_keyboard())
+
+
+async def legacy_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await menu_callback(update, context)
 
 
 def _build_progress_text(progress: dict[str, object]) -> str:
@@ -1876,6 +2659,953 @@ def _build_group_preview_text(groups: list[GroupItem], links_count: int) -> str:
         if len(blocked) > 15:
             lines.append(f"... و {len(blocked) - 15} مورد دیگر")
     return "\n".join(lines)
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_callback_int(data: str, index: int) -> Optional[int]:
+    parts = data.split(":")
+    if len(parts) <= index:
+        return None
+    try:
+        return int(parts[index])
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_order_route(storage: Storage, service_id: Optional[int]) -> tuple[Optional[XuiServerItem], Optional[int], str]:
+    default_server_id, default_inbound_id = storage.get_default_xui_route()
+    inbound_id = default_inbound_id
+    server: Optional[XuiServerItem] = None
+    source = "default"
+
+    if service_id is not None:
+        svc = storage.get_catalog_service(service_id)
+        if svc:
+            source = f"svc:{service_id}"
+            raw_tag = str(svc["title"] or "")
+            tagged_inbound = _extract_inbound_id_from_text(raw_tag)
+            if tagged_inbound is not None:
+                inbound_id = tagged_inbound
+
+    if default_server_id is not None:
+        server = storage.get_xui_server(default_server_id)
+    if not server:
+        servers = storage.list_xui_servers(only_active=True)
+        if servers:
+            server = servers[0]
+            if inbound_id is None:
+                try:
+                    api = XuiPanelClient(server)
+                    api.login()
+                    inbounds = api.list_inbounds()
+                    if inbounds:
+                        inbound_id = _safe_int(inbounds[0].get("id"), 0)
+                except Exception:
+                    pass
+    if server is None:
+        return None, None, source
+    if inbound_id is None or inbound_id <= 0:
+        try:
+            api = XuiPanelClient(server)
+            api.login()
+            inbounds = api.list_inbounds()
+            if inbounds:
+                inbound_id = _safe_int(inbounds[0].get("id"), 0)
+        except Exception:
+            inbound_id = None
+    if inbound_id is None or inbound_id <= 0:
+        return server, None, source
+    return server, inbound_id, source
+
+
+async def _provision_user_order(
+    application: Application,
+    storage: Storage,
+    user_id: int,
+    service_id: Optional[int],
+    order_id: int,
+    order_type: str,
+    amount: int,
+    renew_service_instance_id: Optional[int] = None,
+) -> tuple[bool, str]:
+    server, inbound_id, route_source = _resolve_order_route(storage, service_id)
+    if not server or not inbound_id:
+        detail = "هیچ مسیر پیش‌فرض server/inbound برای تحویل تنظیم نشده است."
+        storage.update_order_status(order_id, "failed_no_route", detail)
+        storage.adjust_wallet_balance(
+            user_id=user_id,
+            delta=amount,
+            tx_type="order_refund",
+            note=f"refund no route order:{order_id}",
+            related_order_id=order_id,
+        )
+        return False, detail
+
+    service = storage.get_catalog_service(service_id) if service_id is not None else None
+    volume_gb = _safe_int(service["volume_gb"] if service else 1, 1)
+    duration_days = _safe_int(service["duration_days"] if service else 30, 30)
+    expires_at = dt_to_str(utc_now() + timedelta(days=max(duration_days, 1)))
+    prefix = f"u{user_id}{order_id}"[-16:]
+
+    if order_type == "renew" and renew_service_instance_id:
+        current = storage.get_user_service(renew_service_instance_id)
+        if not current:
+            detail = "سرویس برای تمدید پیدا نشد."
+            storage.update_order_status(order_id, "failed_not_found", detail)
+            storage.adjust_wallet_balance(
+                user_id=user_id,
+                delta=amount,
+                tx_type="order_refund",
+                note=f"refund missing renew target:{order_id}",
+                related_order_id=order_id,
+            )
+            return False, detail
+        if _safe_int(current["user_id"]) != user_id:
+            detail = "این سرویس متعلق به این کاربر نیست."
+            storage.update_order_status(order_id, "failed_ownership", detail)
+            storage.adjust_wallet_balance(
+                user_id=user_id,
+                delta=amount,
+                tx_type="order_refund",
+                note=f"refund ownership mismatch:{order_id}",
+                related_order_id=order_id,
+            )
+            return False, detail
+        storage.update_user_service_expiry(renew_service_instance_id, expires_at=expires_at, status="active")
+        storage.update_order_status(order_id, "delivered", f"renewed service:{renew_service_instance_id} exp:{expires_at}")
+        return True, f"تمدید انجام شد ✅\nشناسه سرویس: {renew_service_instance_id}\nانقضا: {expires_at}"
+
+    try:
+        api = XuiPanelClient(server)
+        api.login()
+        created, failed = api.add_clients_batch(
+            inbound_id=inbound_id,
+            count=1,
+            total_gb=max(volume_gb, 1),
+            expire_days=max(duration_days, 1),
+            prefix=prefix,
+        )
+        if failed and not created:
+            raise RuntimeError(failed[0])
+    except Exception as exc:
+        detail = f"تحویل ناموفق: {_shorten_text(str(exc), 450)}"
+        storage.update_order_status(order_id, "failed_provision", detail)
+        storage.adjust_wallet_balance(
+            user_id=user_id,
+            delta=amount,
+            tx_type="order_refund",
+            note=f"refund provision failed order:{order_id}",
+            related_order_id=order_id,
+        )
+        return False, detail
+
+    if not created:
+        detail = "پاسخ سرور خالی بود و سرویسی ساخته نشد."
+        storage.update_order_status(order_id, "failed_empty_result", detail)
+        storage.adjust_wallet_balance(
+            user_id=user_id,
+            delta=amount,
+            tx_type="order_refund",
+            note=f"refund empty result order:{order_id}",
+            related_order_id=order_id,
+        )
+        return False, detail
+
+    item = created[0]
+    client_email = str(item.get("email") or f"user-{user_id}-{order_id}")
+    sub_link = str(item.get("sub_link") or "")
+    if not sub_link:
+        sub_link = f"{server.panel_url.rstrip('/')}/sub/{item.get('sub_id', '')}"
+    service_instance_id = storage.add_user_service(
+        user_id=user_id,
+        service_id=service_id,
+        order_id=order_id,
+        server_id=server.id,
+        inbound_id=inbound_id,
+        client_email=client_email,
+        sub_link=sub_link,
+        expires_at=expires_at,
+        status="active",
+    )
+    storage.update_order_status(
+        order_id,
+        "delivered",
+        f"service:{service_instance_id} route:{route_source} server:{server.id} inbound:{inbound_id}",
+    )
+    try:
+        await application.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "سفارش شما تحویل شد ✅\n"
+                f"شماره سفارش: {order_id}\n"
+                f"شناسه سرویس: {service_instance_id}\n"
+                f"ایمیل: {client_email}\n"
+                f"لینک ساب:\n{sub_link}\n"
+                f"انقضا: {expires_at}"
+            ),
+        )
+    except Exception:
+        pass
+    return True, f"سرویس ساخته شد ✅\nشناسه سرویس: {service_instance_id}\nلینک ساب: {sub_link}"
+
+
+async def _purchase_or_renew_service(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service_id: int,
+    order_type: str,
+    renew_service_instance_id: Optional[int] = None,
+) -> None:
+    user = update.effective_user
+    if not user:
+        return
+    storage = get_storage(context.application)
+    service = storage.get_catalog_service(service_id)
+    if not service or not bool(service["is_active"]):
+        await update.effective_message.reply_text("این سرویس فعال نیست یا پیدا نشد.")
+        return
+    amount = _safe_int(service["price"], 0)
+    if amount <= 0:
+        await update.effective_message.reply_text("قیمت سرویس نامعتبر است.")
+        return
+    profile = storage.get_user_profile(user.id)
+    balance = _safe_int(profile["wallet_balance"] if profile else 0, 0)
+    if balance < amount:
+        await update.effective_message.reply_text(
+            f"موجودی کافی نیست.\nموجودی: {balance:,}\nهزینه: {amount:,}\nاز بخش «درخواست شارژ کیف پول» شارژ ثبت کن."
+        )
+        return
+
+    order_id = storage.create_order(
+        user_id=user.id,
+        service_id=service_id,
+        order_type=order_type,
+        amount=amount,
+        status="provisioning",
+        detail="starting",
+    )
+    ok, new_balance, _ = storage.adjust_wallet_balance(
+        user_id=user.id,
+        delta=-amount,
+        tx_type="purchase_debit",
+        note=f"order:{order_id} type:{order_type}",
+        related_order_id=order_id,
+    )
+    if not ok:
+        storage.update_order_status(order_id, "failed_wallet", "برداشت کیف پول ناموفق بود.")
+        await update.effective_message.reply_text("برداشت کیف پول ناموفق بود. دوباره تلاش کن.")
+        return
+    storage.update_order_status(order_id, "paid", f"wallet_debited balance:{new_balance}")
+
+    await update.effective_message.reply_text(
+        "پرداخت ثبت شد، در حال ساخت/تمدید سرویس...\n"
+        f"شماره سفارش: {order_id}\n"
+        f"مبلغ کسر شده: {amount:,}\n"
+        f"موجودی جدید: {new_balance:,}"
+    )
+    ok_delivery, message = await _provision_user_order(
+        application=context.application,
+        storage=storage,
+        user_id=user.id,
+        service_id=service_id,
+        order_id=order_id,
+        order_type=order_type,
+        amount=amount,
+        renew_service_instance_id=renew_service_instance_id,
+    )
+    if ok_delivery:
+        await update.effective_message.reply_text(message)
+    else:
+        await update.effective_message.reply_text(
+            "سفارش ناموفق شد و مبلغ به کیف پول برگشت.\n"
+            f"جزئیات: {message}"
+        )
+
+
+def _wallet_summary_text(storage: Storage, user_id: int) -> str:
+    profile = storage.get_user_profile(user_id)
+    balance = _safe_int(profile["wallet_balance"] if profile else 0, 0)
+    total_orders = storage.count_user_orders(user_id)
+    total_services = storage.count_user_services(user_id)
+    return (
+        f"کیف پول شما:\n"
+        f"موجودی: {balance:,}\n"
+        f"تعداد سفارش‌ها: {total_orders}\n"
+        f"تعداد سرویس‌های من: {total_services}"
+    )
+
+
+def _build_catalog_keyboard(services: list[sqlite3.Row]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for svc in services[:60]:
+        title = str(svc["title"])
+        price = _safe_int(svc["price"])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"🛍 {title} | {price:,}",
+                    callback_data=f"usr:buy:{_safe_int(svc['id'])}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("⬅️ پنل کاربری", callback_data="root:user")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_my_services_keyboard(items: list[sqlite3.Row]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items[:60]:
+        sid = _safe_int(item["id"])
+        status = str(item["status"] or "-")
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"تمدید سرویس #{sid} ({status})",
+                    callback_data=f"usr:renew_pick:{sid}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("⬅️ پنل کاربری", callback_data="root:user")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_admin_pending_deposits_keyboard(rows_data: list[sqlite3.Row]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for row in rows_data[:40]:
+        tx_id = _safe_int(row["id"])
+        amount = _safe_int(row["amount"])
+        user_id = _safe_int(row["user_id"])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"✅ تایید #{tx_id} | کاربر {user_id} | {amount:,}",
+                    callback_data=f"adm:dep_ok:{tx_id}",
+                ),
+                InlineKeyboardButton(
+                    f"❌ رد #{tx_id}",
+                    callback_data=f"adm:dep_rej:{tx_id}",
+                ),
+            ]
+        )
+    rows.append([InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_catalog_manage_keyboard(services: list[sqlite3.Row]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("➕ افزودن سرویس جدید", callback_data="adm:catalog_add")]
+    ]
+    for svc in services[:50]:
+        sid = _safe_int(svc["id"])
+        active = bool(svc["is_active"])
+        title = str(svc["title"])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{'🟢' if active else '⚪'} {title}"[:50],
+                    callback_data=f"adm:catalog_toggle:{sid}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_admin_catalog_keyboard(services: list[sqlite3.Row]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("➕ افزودن سرویس جدید", callback_data="adm:catalog_add")]
+    ]
+    for svc in services[:50]:
+        sid = _safe_int(svc["id"])
+        active = bool(svc["is_active"])
+        title = str(svc["title"])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{'🟢' if active else '⚪'} {title}"[:50],
+                    callback_data=f"adm:catalog_toggle:{sid}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_admin_list_keyboard(admin_ids: list[int], is_owner: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for uid in admin_ids[:50]:
+        if is_owner:
+            rows.append([InlineKeyboardButton(f"حذف ادمین {uid}", callback_data=f"adm:remove_admin:{uid}")])
+    rows.append([InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def send_home_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str = "پنل اصلی",
+) -> None:
+    user = update.effective_user
+    if not user:
+        return
+    storage = get_storage(context.application)
+    storage.ensure_user(
+        user_id=user.id,
+        username=user.username or "",
+        full_name=(user.full_name or user.first_name or "")[:120],
+    )
+    is_admin_user = is_admin_id(context.application, user.id)
+    await update.effective_message.reply_text(
+        text,
+        reply_markup=build_home_menu_keyboard(is_admin=is_admin_user),
+    )
+
+
+async def _show_user_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user:
+        return
+    storage = get_storage(context.application)
+    storage.ensure_user(
+        user_id=user.id,
+        username=user.username or "",
+        full_name=(user.full_name or user.first_name or "")[:120],
+    )
+    await update.effective_message.reply_text(
+        _wallet_summary_text(storage, user.id),
+        reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+    )
+
+
+async def _show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user:
+        return
+    if not is_admin_id(context.application, user.id):
+        await update.effective_message.reply_text("شما دسترسی ادمین ندارید.")
+        return
+    storage = get_storage(context.application)
+    pending = storage.list_pending_deposit_requests(limit=999)
+    anomalies = storage.list_order_anomalies(limit=999)
+    await update.effective_message.reply_text(
+        "پنل مدیریت آماده است.\n"
+        f"درخواست شارژ معلق: {len(pending)}\n"
+        f"مغایرت مالی/تحویل: {len(anomalies)}",
+        reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+    )
+
+
+def _admin_targets(application: Application) -> list[int]:
+    storage = get_storage(application)
+    targets: set[int] = set(storage.list_admin_ids())
+    owner_id = storage.get_owner_id()
+    if owner_id:
+        targets.add(int(owner_id))
+    return sorted(targets)
+
+
+async def _notify_admins(application: Application, text: str) -> None:
+    for admin_id in _admin_targets(application):
+        try:
+            await application.bot.send_message(chat_id=admin_id, text=text[:3900])
+        except Exception:
+            continue
+
+
+def _render_order_row(row: sqlite3.Row) -> str:
+    return (
+        f"#{_safe_int(row['id'])} | کاربر:{_safe_int(row['user_id'])} | "
+        f"{row['order_type']} | مبلغ:{_safe_int(row['amount']):,} | "
+        f"وضعیت:{row['status']} | {str(row['created_at'])[:19]}"
+    )
+
+
+def _render_service_row(row: sqlite3.Row) -> str:
+    return (
+        f"#{_safe_int(row['id'])} | svc:{_safe_int(row['service_id'])} | "
+        f"order:{_safe_int(row['order_id'])} | status:{row['status']} | "
+        f"exp:{row['expires_at'] or '-'}"
+    )
+
+
+async def root_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    user = update.effective_user
+    if not user:
+        await query.answer("کاربر نامعتبر", show_alert=True)
+        return
+    storage = get_storage(context.application)
+    username, full_name = _user_label(user)
+    storage.ensure_user(user.id, username=username, full_name=full_name)
+    admin_user = is_admin_id(context.application, user.id)
+    data = query.data
+    if data in {"root:home", "root:refresh"}:
+        await query.edit_message_text(
+            "منوی اصلی",
+            reply_markup=build_home_menu_keyboard(is_admin=admin_user),
+        )
+        return
+    if data == "root:user":
+        await query.edit_message_text(
+            _wallet_summary_text(storage, user.id),
+            reply_markup=build_user_menu_keyboard(is_admin=admin_user),
+        )
+        return
+    if data == "root:admin":
+        if not admin_user:
+            await query.answer("شما دسترسی ادمین ندارید.", show_alert=True)
+            return
+        pending = storage.list_pending_deposit_requests(limit=999)
+        anomalies = storage.list_order_anomalies(limit=999)
+        await query.edit_message_text(
+            "پنل مدیریت آماده است.\n"
+            f"درخواست شارژ معلق: {len(pending)}\n"
+            f"مغایرت مالی/تحویل: {len(anomalies)}",
+            reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+        )
+        return
+    await query.answer("عملیات نامشخص")
+
+
+async def user_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    user = update.effective_user
+    if not user:
+        await query.answer("کاربر نامعتبر", show_alert=True)
+        return
+    storage = get_storage(context.application)
+    username, full_name = _user_label(user)
+    storage.ensure_user(user.id, username=username, full_name=full_name)
+    data = query.data
+
+    if data == "usr:wallet":
+        await query.edit_message_text(
+            _wallet_summary_text(storage, user.id),
+            reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+        )
+        return
+
+    if data == "usr:wallet_logs":
+        txs = storage.list_user_wallet_transactions(user.id, limit=20)
+        if not txs:
+            await query.edit_message_text(
+                "گردش کیف پولی ثبت نشده است.",
+                reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+            )
+            return
+        lines = []
+        for row in txs:
+            lines.append(
+                f"#{_safe_int(row['id'])} | {row['tx_type']} | {row['status']} | "
+                f"{_safe_int(row['amount']):,} | {str(row['created_at'])[:19]}"
+            )
+        await query.edit_message_text(
+            "آخرین گردش کیف پول:\n" + "\n".join(lines[:25]),
+            reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+        )
+        return
+
+    if data == "usr:deposit":
+        context.user_data["awaiting_deposit_request"] = True
+        await query.edit_message_text(
+            "مبلغ شارژ و توضیح را بفرست:\n"
+            "<amount> | <txHash/توضیح>\n\n"
+            "مثال:\n500000 | TRX-abc-123",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ پنل کاربری", callback_data="root:user")]]
+            ),
+        )
+        return
+
+    if data == "usr:catalog":
+        _ensure_default_catalog(storage)
+        services = storage.list_catalog_services(only_active=True)
+        if not services:
+            await query.edit_message_text(
+                "فعلا سرویسی برای خرید فعال نیست.",
+                reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+            )
+            return
+        await query.edit_message_text(
+            "یک سرویس را برای خرید انتخاب کن:",
+            reply_markup=_build_catalog_keyboard(services),
+        )
+        return
+
+    if data.startswith("usr:buy:"):
+        service_id = _parse_callback_int(data, 2)
+        if service_id is None:
+            await query.answer("شناسه سرویس نامعتبر است.", show_alert=True)
+            return
+        await _purchase_or_renew_service(update, context, service_id=service_id, order_type="buy")
+        return
+
+    if data == "usr:my_orders":
+        rows = storage.list_orders(limit=20, user_id=user.id)
+        if not rows:
+            await query.edit_message_text(
+                "سفارشی ثبت نشده است.",
+                reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+            )
+            return
+        lines = [_render_order_row(row) for row in rows[:20]]
+        await query.edit_message_text(
+            "آخرین سفارش‌های شما:\n" + "\n".join(lines),
+            reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+        )
+        return
+
+    if data == "usr:my_services":
+        items = storage.list_user_services(user.id, limit=40)
+        if not items:
+            await query.edit_message_text(
+                "هنوز سرویسی ندارید.",
+                reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+            )
+            return
+        lines = [_render_service_row(item) for item in items[:10]]
+        await query.edit_message_text(
+            "سرویس‌های شما:\n" + "\n".join(lines) + "\n\nبرای تمدید، یک مورد را انتخاب کن:",
+            reply_markup=_build_my_services_keyboard(items),
+        )
+        return
+
+    if data.startswith("usr:renew_pick:"):
+        service_instance_id = _parse_callback_int(data, 2)
+        if service_instance_id is None:
+            await query.answer("شناسه سرویس نامعتبر است.", show_alert=True)
+            return
+        service_item = storage.get_user_service(service_instance_id)
+        if not service_item or _safe_int(service_item["user_id"]) != user.id:
+            await query.answer("این سرویس متعلق به شما نیست.", show_alert=True)
+            return
+        svc_id = _safe_int(service_item["service_id"], 0)
+        if svc_id <= 0:
+            catalogs = storage.list_catalog_services(only_active=True)
+            svc_id = _safe_int(catalogs[0]["id"], 0) if catalogs else 0
+        if svc_id <= 0:
+            await query.answer("پلن تمدید پیدا نشد. با پشتیبانی تماس بگیر.", show_alert=True)
+            return
+        await query.edit_message_text(
+            f"تمدید سرویس #{service_instance_id}\n"
+            "برای ادامه پرداخت کیف پول، تایید را بزن.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "✅ تایید تمدید",
+                            callback_data=f"usr:renew_do:{service_instance_id}:{svc_id}",
+                        )
+                    ],
+                    [InlineKeyboardButton("⬅️ سرویس‌های من", callback_data="usr:my_services")],
+                ]
+            ),
+        )
+        return
+
+    if data.startswith("usr:renew_do:"):
+        service_instance_id = _parse_callback_int(data, 2)
+        svc_id = _parse_callback_int(data, 3)
+        if service_instance_id is None or svc_id is None:
+            await query.answer("پارامتر تمدید نامعتبر است.", show_alert=True)
+            return
+        await _purchase_or_renew_service(
+            update,
+            context,
+            service_id=svc_id,
+            order_type="renew",
+            renew_service_instance_id=service_instance_id,
+        )
+        return
+
+    await query.answer("عملیات نامشخص")
+
+
+async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    user = update.effective_user
+    if not user:
+        await query.answer("کاربر نامعتبر", show_alert=True)
+        return
+    if not is_admin_id(context.application, user.id):
+        await query.answer("شما دسترسی ادمین ندارید.", show_alert=True)
+        return
+    storage = get_storage(context.application)
+    data = query.data
+
+    if data == "adm:broadcast_panel":
+        await query.edit_message_text(
+            "پنل ارسال گروهی:",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    if data == "adm:deposits":
+        rows_data = storage.list_pending_deposit_requests(limit=40)
+        if not rows_data:
+            await query.edit_message_text(
+                "درخواست شارژ معلقی وجود ندارد.",
+                reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+            )
+            return
+        lines = [
+            f"#{_safe_int(row['id'])} | کاربر:{_safe_int(row['user_id'])} | مبلغ:{_safe_int(row['amount']):,}"
+            for row in rows_data[:15]
+        ]
+        await query.edit_message_text(
+            "درخواست‌های شارژ معلق:\n" + "\n".join(lines),
+            reply_markup=_build_admin_pending_deposits_keyboard(rows_data),
+        )
+        return
+
+    if data.startswith("adm:dep_ok:"):
+        tx_id = _parse_callback_int(data, 2)
+        if tx_id is None:
+            await query.answer("شناسه درخواست نامعتبر است.", show_alert=True)
+            return
+        ok, message, target_user_id, new_balance = storage.approve_deposit_request(tx_id, admin_id=user.id)
+        if ok and target_user_id:
+            try:
+                await context.application.bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"✅ شارژ کیف پول شما تایید شد.\nموجودی جدید: {new_balance:,}",
+                )
+            except Exception:
+                pass
+        await query.answer(message, show_alert=not ok)
+        rows_data = storage.list_pending_deposit_requests(limit=40)
+        await query.edit_message_text(
+            "درخواست‌های شارژ:",
+            reply_markup=_build_admin_pending_deposits_keyboard(rows_data),
+        )
+        return
+
+    if data.startswith("adm:dep_no:") or data.startswith("adm:dep_rej:"):
+        tx_id = _parse_callback_int(data, 2)
+        if tx_id is None:
+            await query.answer("شناسه درخواست نامعتبر است.", show_alert=True)
+            return
+        ok, message, target_user_id = storage.reject_deposit_request(tx_id, admin_id=user.id, reason="manual")
+        if ok and target_user_id:
+            try:
+                await context.application.bot.send_message(
+                    chat_id=target_user_id,
+                    text="❌ درخواست شارژ شما رد شد. در صورت نیاز با پشتیبانی تماس بگیر.",
+                )
+            except Exception:
+                pass
+        await query.answer(message, show_alert=not ok)
+        rows_data = storage.list_pending_deposit_requests(limit=40)
+        await query.edit_message_text(
+            "درخواست‌های شارژ:",
+            reply_markup=_build_admin_pending_deposits_keyboard(rows_data),
+        )
+        return
+
+    if data == "adm:user_search":
+        context.user_data["awaiting_user_search"] = True
+        await query.edit_message_text(
+            "آیدی کاربر را بفرست تا اطلاعاتش نمایش داده شود.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")]]
+            ),
+        )
+        return
+
+    if data.startswith("adm:user_adjust:"):
+        target_user_id = _parse_callback_int(data, 2)
+        if target_user_id is None:
+            await query.answer("آیدی کاربر نامعتبر است.", show_alert=True)
+            return
+        context.user_data["awaiting_wallet_adjust"] = True
+        context.user_data["awaiting_wallet_adjust_user_id"] = target_user_id
+        await query.edit_message_text(
+            f"تنظیم کیف پول کاربر {target_user_id}\n"
+            "فرمت:\n<delta> | <note>\n"
+            "مثال: +50000 | correction\n"
+            "مثال: -25000 | manual debit",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")]]
+            ),
+        )
+        return
+
+    if data.startswith("adm:user_orders:"):
+        target_user_id = _parse_callback_int(data, 2)
+        if target_user_id is None:
+            await query.answer("آیدی کاربر نامعتبر است.", show_alert=True)
+            return
+        rows = storage.list_orders(limit=30, user_id=target_user_id)
+        if not rows:
+            await query.edit_message_text(
+                f"سفارشی برای کاربر {target_user_id} ثبت نشده.",
+                reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+            )
+            return
+        await query.edit_message_text(
+            f"سفارش‌های کاربر {target_user_id}:\n" + "\n".join(_render_order_row(row) for row in rows[:20]),
+            reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+        )
+        return
+
+    if data.startswith("adm:user_services:"):
+        target_user_id = _parse_callback_int(data, 2)
+        if target_user_id is None:
+            await query.answer("آیدی کاربر نامعتبر است.", show_alert=True)
+            return
+        rows = storage.list_user_services(target_user_id, limit=30)
+        if not rows:
+            await query.edit_message_text(
+                f"سرویسی برای کاربر {target_user_id} ثبت نشده.",
+                reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+            )
+            return
+        await query.edit_message_text(
+            f"سرویس‌های کاربر {target_user_id}:\n"
+            + "\n".join(_render_service_row(row) for row in rows[:20]),
+            reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+        )
+        return
+
+    if data == "adm:audit":
+        anomalies = storage.list_order_anomalies(limit=40)
+        if not anomalies:
+            await query.edit_message_text(
+                "مغایرت مالی/تحویل فعالی پیدا نشد ✅",
+                reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+            )
+            return
+        lines = []
+        for item in anomalies[:20]:
+            lines.append(
+                f"#{item['order_id']} | u:{item['user_id']} | {item['status']} | "
+                f"{item['amount']:,} | {item['issue']}"
+            )
+        await query.edit_message_text(
+            "مغایرت‌های شناسایی‌شده:\n" + "\n".join(lines),
+            reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+        )
+        return
+
+    if data == "adm:catalog":
+        _ensure_default_catalog(storage)
+        services = storage.list_catalog_services(only_active=False)
+        await query.edit_message_text(
+            "مدیریت کاتالوگ سرویس:",
+            reply_markup=_build_admin_catalog_keyboard(services),
+        )
+        return
+
+    if data == "adm:catalog_add":
+        context.user_data["awaiting_catalog_add"] = True
+        await query.edit_message_text(
+            "فرمت افزودن سرویس:\n<title> | <price> | <gb> | <days>\n"
+            "مثال:\nپلن 20GB | 950000 | 20 | 30",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")]]
+            ),
+        )
+        return
+
+    if data.startswith("adm:catalog_toggle:"):
+        service_id = _parse_callback_int(data, 2)
+        if service_id is None:
+            await query.answer("شناسه سرویس نامعتبر است.", show_alert=True)
+            return
+        service = storage.get_catalog_service(service_id)
+        if not service:
+            await query.answer("سرویس پیدا نشد.", show_alert=True)
+            return
+        new_value = not bool(service["is_active"])
+        storage.set_catalog_service_active(service_id, new_value)
+        services = storage.list_catalog_services(only_active=False)
+        await query.edit_message_text(
+            f"وضعیت سرویس {'فعال' if new_value else 'غیرفعال'} شد.",
+            reply_markup=_build_admin_catalog_keyboard(services),
+        )
+        return
+
+    if data == "adm:list_admins":
+        ids = storage.list_admin_ids()
+        text = "ادمین‌ها:\n" + ("\n".join(f"- {uid}" for uid in ids) if ids else "هیچ ادمینی ثبت نشده.")
+        await query.edit_message_text(
+            text,
+            reply_markup=_build_admin_list_keyboard(ids, is_owner=is_owner_id(context.application, user.id)),
+        )
+        return
+
+    if data == "adm:add_admin":
+        if not is_owner_id(context.application, user.id):
+            await query.answer("فقط مالک می‌تواند ادمین اضافه کند.", show_alert=True)
+            return
+        context.user_data["awaiting_add_admin"] = True
+        await query.edit_message_text(
+            "آیدی عددی ادمین جدید را بفرست.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")]]
+            ),
+        )
+        return
+
+    if data == "adm:remove_admin":
+        if not is_owner_id(context.application, user.id):
+            await query.answer("فقط مالک می‌تواند ادمین حذف کند.", show_alert=True)
+            return
+        context.user_data["awaiting_remove_admin"] = True
+        await query.edit_message_text(
+            "آیدی عددی ادمینی که می‌خواهی حذف شود را بفرست.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")]]
+            ),
+        )
+        return
+
+    if data.startswith("adm:remove_admin:"):
+        if not is_owner_id(context.application, user.id):
+            await query.answer("فقط مالک می‌تواند ادمین حذف کند.", show_alert=True)
+            return
+        target_uid = _parse_callback_int(data, 2)
+        if target_uid is None:
+            await query.answer("آیدی نامعتبر است.", show_alert=True)
+            return
+        if is_owner_id(context.application, target_uid):
+            await query.answer("مالک اصلی قابل حذف نیست.", show_alert=True)
+            return
+        storage.remove_admin_id(target_uid)
+        await query.answer("ادمین حذف شد.")
+        ids = storage.list_admin_ids()
+        await query.edit_message_text(
+            "ادمین‌ها:\n" + ("\n".join(f"- {uid}" for uid in ids) if ids else "هیچ ادمینی ثبت نشده."),
+            reply_markup=_build_admin_list_keyboard(ids, is_owner=True),
+        )
+        return
+
+    await query.answer("عملیات نامشخص")
+
+
+def _clear_user_admin_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in (
+        "awaiting_deposit_request",
+        "awaiting_user_search",
+        "awaiting_wallet_adjust",
+        "awaiting_wallet_adjust_user_id",
+        "awaiting_catalog_add",
+        "awaiting_add_admin",
+        "awaiting_remove_admin",
+    ):
+        context.user_data.pop(key, None)
 
 
 def _clear_group_manage_state(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2957,6 +4687,13 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("awaiting_links", None)
+    context.user_data.pop("awaiting_deposit_request", None)
+    context.user_data.pop("awaiting_user_search", None)
+    context.user_data.pop("awaiting_wallet_adjust", None)
+    context.user_data.pop("awaiting_wallet_adjust_user_id", None)
+    context.user_data.pop("awaiting_catalog_add", None)
+    context.user_data.pop("awaiting_add_admin", None)
+    context.user_data.pop("awaiting_remove_admin", None)
     context.user_data.pop("wizard_mode", None)
     context.user_data.pop("awaiting_wizard_links", None)
     context.user_data.pop("wizard_links", None)
@@ -2966,12 +4703,211 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop("pending_selected_groups", None)
     context.user_data.pop("awaiting_links_file", None)
     _clear_xui_state(context)
-    await send_main_menu(update, context, text="عملیات لغو شد. پنل آماده است.")
+    await send_home_menu(update, context, text="عملیات لغو شد.")
 
 
 async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or update.effective_chat.type != ChatType.PRIVATE:
         return
+    user = update.effective_user
+    if not user or not update.effective_message:
+        return
+    storage = get_storage(context.application)
+    username, full_name = _user_label(user)
+    storage.ensure_user(user.id, username=username, full_name=full_name)
+
+    if context.user_data.get("awaiting_deposit_request"):
+        context.user_data.pop("awaiting_deposit_request", None)
+        raw_text = (update.effective_message.text or "").strip()
+        parts = [part.strip() for part in raw_text.split("|", 1)]
+        if len(parts) != 2:
+            await update.effective_message.reply_text(
+                "فرمت نامعتبر است.\n"
+                "فرمت درست:\n<amount> | <txHash/توضیح>\n"
+                "مثال:\n500000 | TRX-abc-123",
+                reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+            )
+            return
+        try:
+            amount = int(parts[0].replace(",", "").replace("_", "").strip())
+        except ValueError:
+            await update.effective_message.reply_text("مبلغ باید عدد صحیح باشد.")
+            return
+        if amount <= 0:
+            await update.effective_message.reply_text("مبلغ باید بیشتر از صفر باشد.")
+            return
+        note = parts[1][:300]
+        tx_id = storage.create_deposit_request(user.id, amount=amount, note=note)
+        admins = storage.list_admin_ids()
+        notify_text = (
+            "درخواست شارژ جدید 💳\n"
+            f"tx_id: {tx_id}\n"
+            f"user_id: {user.id}\n"
+            f"amount: {amount:,}\n"
+            f"note: {note}"
+        )
+        for admin_id in admins:
+            try:
+                await context.application.bot.send_message(chat_id=admin_id, text=notify_text)
+            except Exception:
+                continue
+        await update.effective_message.reply_text(
+            f"درخواست شارژ ثبت شد ✅\nشناسه درخواست: {tx_id}",
+            reply_markup=build_user_menu_keyboard(is_admin=is_admin_id(context.application, user.id)),
+        )
+        return
+
+    if context.user_data.get("awaiting_user_search") and is_admin_id(context.application, user.id):
+        context.user_data.pop("awaiting_user_search", None)
+        raw_text = (update.effective_message.text or "").strip()
+        try:
+            target_user_id = int(raw_text)
+        except ValueError:
+            await update.effective_message.reply_text("آیدی کاربر باید عدد صحیح باشد.")
+            return
+        profile = storage.get_user_profile(target_user_id)
+        orders_count = storage.count_user_orders(target_user_id)
+        services_count = storage.count_user_services(target_user_id)
+        txs = storage.list_user_wallet_transactions(target_user_id, limit=10)
+        tx_lines = [
+            f"#{_safe_int(tx['id'])} | {tx['tx_type']} | {tx['status']} | {_safe_int(tx['amount']):,}"
+            for tx in txs[:6]
+        ]
+        await update.effective_message.reply_text(
+            f"کاربر: {target_user_id}\n"
+            f"نام: {profile['full_name'] if profile else '-'}\n"
+            f"یوزرنیم: @{profile['username'] if profile and profile['username'] else '-'}\n"
+            f"موجودی: {_safe_int(profile['wallet_balance'] if profile else 0):,}\n"
+            f"تعداد سفارش: {orders_count}\n"
+            f"تعداد سرویس: {services_count}\n\n"
+            f"آخرین تراکنش‌ها:\n" + ("\n".join(tx_lines) if tx_lines else "ندارد"),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("💸 تنظیم کیف پول این کاربر", callback_data=f"adm:user_adjust:{target_user_id}")],
+                    [InlineKeyboardButton("📦 سفارش‌های کاربر", callback_data=f"adm:user_orders:{target_user_id}")],
+                    [InlineKeyboardButton("🧾 سرویس‌های کاربر", callback_data=f"adm:user_services:{target_user_id}")],
+                    [InlineKeyboardButton("⬅️ پنل مدیریت", callback_data="root:admin")],
+                ]
+            ),
+        )
+        return
+
+    if context.user_data.get("awaiting_wallet_adjust") and is_admin_id(context.application, user.id):
+        target_user_id = context.user_data.get("awaiting_wallet_adjust_user_id")
+        context.user_data.pop("awaiting_wallet_adjust", None)
+        context.user_data.pop("awaiting_wallet_adjust_user_id", None)
+        if not isinstance(target_user_id, int):
+            await update.effective_message.reply_text("کاربر مقصد مشخص نیست.")
+            return
+        raw_text = (update.effective_message.text or "").strip()
+        parts = [part.strip() for part in raw_text.split("|", 1)]
+        if len(parts) != 2:
+            await update.effective_message.reply_text(
+                "فرمت نامعتبر است.\n<delta> | <note>\nمثال: +50000 | correction"
+            )
+            return
+        try:
+            delta = int(parts[0].replace(",", "").replace("_", "").strip())
+        except ValueError:
+            await update.effective_message.reply_text("delta باید عدد صحیح باشد.")
+            return
+        note = f"manual_by:{user.id} {parts[1][:220]}"
+        ok, new_balance, _ = storage.adjust_wallet_balance(
+            user_id=target_user_id,
+            delta=delta,
+            tx_type="manual_adjust",
+            note=note,
+        )
+        if not ok:
+            await update.effective_message.reply_text("عملیات ناموفق بود (موجودی منفی می‌شود).")
+            return
+        await update.effective_message.reply_text(
+            f"کیف پول کاربر {target_user_id} تنظیم شد ✅\n"
+            f"تغییر: {delta:,}\n"
+            f"موجودی جدید: {new_balance:,}",
+            reply_markup=build_admin_menu_keyboard(is_owner=is_owner_id(context.application, user.id)),
+        )
+        try:
+            await context.application.bot.send_message(
+                chat_id=target_user_id,
+                text=f"کیف پول شما توسط پشتیبانی تغییر کرد.\nمبلغ تغییر: {delta:,}\nموجودی جدید: {new_balance:,}",
+            )
+        except Exception:
+            pass
+        return
+
+    if context.user_data.get("awaiting_catalog_add") and is_admin_id(context.application, user.id):
+        context.user_data.pop("awaiting_catalog_add", None)
+        raw_text = (update.effective_message.text or "").strip()
+        parts = [part.strip() for part in raw_text.split("|")]
+        if len(parts) != 4 or not parts[0]:
+            await update.effective_message.reply_text(
+                "فرمت نامعتبر است.\n<title> | <price> | <gb> | <days>\nمثال: پلن 20GB | 950000 | 20 | 30"
+            )
+            return
+        title = parts[0][:120]
+        try:
+            price = int(parts[1].replace(",", "").replace("_", ""))
+            volume_gb = int(parts[2])
+            duration_days = int(parts[3])
+        except ValueError:
+            await update.effective_message.reply_text("price/gb/days باید عدد صحیح باشند.")
+            return
+        if price <= 0 or volume_gb <= 0 or duration_days <= 0:
+            await update.effective_message.reply_text("price و gb و days باید بیشتر از صفر باشند.")
+            return
+        storage.add_catalog_service(title=title, price=price, volume_gb=volume_gb, duration_days=duration_days)
+        services = storage.list_catalog_services(only_active=False)
+        await update.effective_message.reply_text(
+            "سرویس جدید اضافه شد ✅",
+            reply_markup=_build_admin_catalog_keyboard(services),
+        )
+        return
+
+    if context.user_data.get("awaiting_add_admin") and is_owner_id(context.application, user.id):
+        context.user_data.pop("awaiting_add_admin", None)
+        raw_text = (update.effective_message.text or "").strip()
+        try:
+            target_uid = int(raw_text)
+        except ValueError:
+            await update.effective_message.reply_text("آیدی ادمین باید عدد صحیح باشد.")
+            return
+        storage.add_admin_id(target_uid)
+        ids = storage.list_admin_ids()
+        await update.effective_message.reply_text(
+            "ادمین اضافه شد ✅",
+            reply_markup=_build_admin_list_keyboard(ids, is_owner=True),
+        )
+        return
+
+    if context.user_data.get("awaiting_remove_admin") and is_owner_id(context.application, user.id):
+        context.user_data.pop("awaiting_remove_admin", None)
+        raw_text = (update.effective_message.text or "").strip()
+        try:
+            target_uid = int(raw_text)
+        except ValueError:
+            await update.effective_message.reply_text("آیدی ادمین باید عدد صحیح باشد.")
+            return
+        if is_owner_id(context.application, target_uid):
+            await update.effective_message.reply_text("مالک اصلی قابل حذف نیست.")
+            return
+        storage.remove_admin_id(target_uid)
+        ids = storage.list_admin_ids()
+        await update.effective_message.reply_text(
+            "ادمین حذف شد ✅",
+            reply_markup=_build_admin_list_keyboard(ids, is_owner=True),
+        )
+        return
+
+    if (context.user_data.get("awaiting_deposit_request") or context.user_data.get("awaiting_user_search")
+        or context.user_data.get("awaiting_wallet_adjust") or context.user_data.get("awaiting_catalog_add")
+        or context.user_data.get("awaiting_add_admin") or context.user_data.get("awaiting_remove_admin")):
+        await update.effective_message.reply_text(
+            "برای این عملیات دسترسی ادمین/مالک لازم است.",
+            reply_markup=build_home_menu_keyboard(is_admin=False),
+        )
+        return
+
     if not await owner_required(update, context):
         return
     if context.user_data.get("awaiting_xui_server"):
@@ -3688,7 +5624,7 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CommandHandler("removegroup", removegroup_command))
     app.add_handler(CommandHandler("refreshadmins", refresh_admins_command))
     app.add_handler(CommandHandler("sendlinks", sendlinks_command))
-    app.add_handler(CommandHandler("panel", open_main_menu))
+    app.add_handler(CommandHandler("panel", panel_command))
     app.add_handler(CommandHandler("services", services_command))
     app.add_handler(CommandHandler("runsvc", runsvc_command))
     app.add_handler(CommandHandler("enablesvc", enablesvc_command))
@@ -3699,6 +5635,9 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CommandHandler("register", register_group_command))
     app.add_handler(CallbackQueryHandler(selector_callback, pattern=r"^sel:"))
     app.add_handler(CallbackQueryHandler(wizard_callback, pattern=r"^wiz:"))
+    app.add_handler(CallbackQueryHandler(root_menu_callback, pattern=r"^root:"))
+    app.add_handler(CallbackQueryHandler(user_menu_callback, pattern=r"^usr:"))
+    app.add_handler(CallbackQueryHandler(admin_menu_callback, pattern=r"^adm:"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^manage:"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"))
     app.add_handler(ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
@@ -3714,6 +5653,7 @@ def main() -> None:
     storage = Storage(DB_PATH)
     storage.init()
     configured_owner_id = sync_owner_from_env(storage)
+    ensure_admin_bootstrap(storage, configured_owner_id)
 
     if WEB_PANEL_ENABLED:
         web_thread = threading.Thread(target=run_web_panel, args=(storage,), daemon=True, name="web-panel")
