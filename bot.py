@@ -42,7 +42,7 @@ import uvicorn
 LOGGER = logging.getLogger(__name__)
 DB_PATH = os.getenv("DB_PATH", "bot_data.sqlite3")
 SEND_DELAY_SECONDS = float(os.getenv("SEND_DELAY_SECONDS", "3.0"))
-MIN_SEND_GAP_SECONDS = max(float(os.getenv("MIN_SEND_GAP_SECONDS", "2.2")), 0.0)
+MIN_SEND_GAP_SECONDS = max(float(os.getenv("MIN_SEND_GAP_SECONDS", "3.0")), 0.0)
 SCHEDULER_POLL_SECONDS = max(float(os.getenv("SCHEDULER_POLL_SECONDS", "5.0")), 1.0)
 MAX_CONCURRENT_BROADCASTS = max(int(os.getenv("MAX_CONCURRENT_BROADCASTS", "4")), 1)
 DB_TIMEOUT_SECONDS = max(float(os.getenv("DB_TIMEOUT_SECONDS", "20.0")), 1.0)

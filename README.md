@@ -37,7 +37,7 @@ STRICT_OWNER_ONLY=true
 
 DB_PATH=bot_data.sqlite3
 SEND_DELAY_SECONDS=3.0
-MIN_SEND_GAP_SECONDS=2.2
+MIN_SEND_GAP_SECONDS=3.0
 SCHEDULER_POLL_SECONDS=5
 MAX_CONCURRENT_BROADCASTS=4
 SERVICE_NOTIFY_OWNER=true
@@ -57,7 +57,7 @@ WEB_PANEL_PASSWORD=myStrongPass123
 - `OWNER_ID`: فقط همین آیدی به بات دسترسی دارد
 - `MAX_CONCURRENT_BROADCASTS`: تعداد کار همزمان (مثلا 4)
 - `SEND_DELAY_SECONDS`: تاخیر پایه ارسال (پیشنهادی `3.0`)
-- `MIN_SEND_GAP_SECONDS`: حداقل فاصله واقعی بین هر دو پیام در کل ربات (پیشنهادی `2.2` یا بیشتر)
+- `MIN_SEND_GAP_SECONDS`: حداقل فاصله واقعی بین هر دو پیام در کل ربات (پیشنهادی `3.0` یا بیشتر)
 - `SEND_LOG_RETENTION`: سقف نگهداری لاگ ارسال در دیتابیس برای جلوگیری از رشد بی‌نهایت فایل DB
 - `DB_TIMEOUT_SECONDS`: زمان انتظار قفل دیتابیس قبل از خطا
 - `WEB_PANEL_PATH`: مسیر مخفی پنل
@@ -184,7 +184,7 @@ python3 bot.py
 
 ```bash
 sudo sed -i 's/^SEND_DELAY_SECONDS=.*/SEND_DELAY_SECONDS=3.0/' /opt/telegram-sender/.env
-sudo sed -i 's/^MIN_SEND_GAP_SECONDS=.*/MIN_SEND_GAP_SECONDS=2.5/' /opt/telegram-sender/.env
+sudo sed -i 's/^MIN_SEND_GAP_SECONDS=.*/MIN_SEND_GAP_SECONDS=3.0/' /opt/telegram-sender/.env
 sudo systemctl restart telegram-sender
 ```
 
