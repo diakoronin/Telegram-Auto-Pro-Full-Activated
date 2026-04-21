@@ -1164,6 +1164,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "menu:setlinks_file":
+        context.user_data["wizard_mode"] = True
+        context.user_data["awaiting_wizard_links"] = True
         context.user_data["awaiting_links_file"] = True
         context.user_data["awaiting_links"] = True
         await query.edit_message_text(
@@ -1391,8 +1393,9 @@ async def set_links_from_document(
     await set_links_from_text(update, context, raw_text)
     await update.effective_message.reply_text(f"منبع لینک‌ها: فایل {file_name}")
 
-    # If wizard mode is active, continue automatically to group-selection step.
-    if context.user_data.get("wizard_mode"):
+    # Continue automatically to group-selection step after txt upload.
+    if context.user_data.get("wizard_mode") or context.user_data.get("awaiting_links_file"):
+        context.user_data["wizard_mode"] = True
         links, _ = parse_links(raw_text)
         if links:
             context.user_data["wizard_links"] = links
