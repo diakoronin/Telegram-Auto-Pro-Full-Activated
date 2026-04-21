@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatMemberStatus, ChatType
-from telegram.error import RetryAfter, TelegramError
+from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
     ApplicationHandlerStop,
     Application,
@@ -592,6 +592,24 @@ class BroadcastManager:
             self.running_tasks[key] = task
             return True
 
+    async def _notify_owner_safe(self, owner_chat_id: Optional[int], text: str) -> None:
+        if not owner_chat_id:
+            return
+        max_attempt = 3
+        for attempt in range(1, max_attempt + 1):
+            try:
+                await self.application.bot.send_message(chat_id=owner_chat_id, text=text)
+                return
+            except RetryAfter as exc:
+                wait_seconds = max(int(exc.retry_after), 1)
+                await asyncio.sleep(wait_seconds + 1)
+            except TelegramError as exc:
+                LOGGER.warning("ارسال پیام به مالک ناموفق بود (attempt=%s): %s", attempt, exc)
+                return
+            except Exception as exc:  # pragma: no cover
+                LOGGER.warning("خطای غیرمنتظره در ارسال پیام مالک (attempt=%s): %s", attempt, exc)
+                return
+
     async def _run_job(
         self,
         key: str,
@@ -602,10 +620,6 @@ class BroadcastManager:
         on_finish: Optional[Callable[[BroadcastResult], Awaitable[None]]],
     ) -> None:
         result = BroadcastResult(sent_ok=0, sent_fail=0, total=len(group_ids) * len(links), failures=[])
-        all_groups = await sync_groups_admin_status(
-            self.storage, self.application.bot, self.storage.list_groups()
-        )
-        group_map = {group.chat_id: group for group in all_groups}
         self._last_failure_notify_at = 0.0
         self._progress = {
             "key": key,
@@ -617,12 +631,12 @@ class BroadcastManager:
         }
 
         try:
+            all_groups = await sync_groups_admin_status(
+                self.storage, self.application.bot, self.storage.list_groups()
+            )
+            group_map = {group.chat_id: group for group in all_groups}
             async with self.semaphore:
-                if owner_chat_id:
-                    await self.application.bot.send_message(
-                        chat_id=owner_chat_id,
-                        text=f"شروع ارسال: {title}\nشناسه کار: {key}",
-                    )
+                await self._notify_owner_safe(owner_chat_id, f"شروع ارسال: {title}\nشناسه کار: {key}")
                 group_index = 0
                 for group_id in group_ids:
                     group_index += 1
@@ -650,17 +664,13 @@ class BroadcastManager:
                             )
                             if self._progress is not None:
                                 self._progress["sent_fail"] = result.sent_fail
-                        if owner_chat_id:
-                            try:
-                                await self.application.bot.send_message(
-                                    chat_id=owner_chat_id,
-                                    text=(
-                                        f"⚠️ گروه {known_group.title} ({group_id}) قابل ارسال نیست: {reason}\n"
-                                        "برای توقف فوری /stop را بزن."
-                                    ),
-                                )
-                            except TelegramError:
-                                pass
+                        await self._notify_owner_safe(
+                            owner_chat_id,
+                            (
+                                f"⚠️ گروه {known_group.title} ({group_id}) قابل ارسال نیست: {reason}\n"
+                                "برای توقف فوری /stop را بزن."
+                            ),
+                        )
                         continue
                     for link in links:
                         sent = await self._send_with_retry(
@@ -680,11 +690,10 @@ class BroadcastManager:
                             self._progress["sent_fail"] = result.sent_fail
                         if SEND_DELAY_SECONDS > 0:
                             await asyncio.sleep(SEND_DELAY_SECONDS)
-                    if owner_chat_id:
-                        await self.application.bot.send_message(
-                            chat_id=owner_chat_id,
-                            text=f"{title}: گروه {group_index}/{len(group_ids)} تمام شد ({group_id})",
-                        )
+                    await self._notify_owner_safe(
+                        owner_chat_id,
+                        f"{title}: گروه {group_index}/{len(group_ids)} تمام شد ({group_id})",
+                    )
         except asyncio.CancelledError:
             result.stopped = True
             raise
@@ -706,10 +715,7 @@ class BroadcastManager:
                     summary += f"\nخطا: {result.error}"
                 if result.failures:
                     summary += "\nچند خطای اول:\n" + "\n".join(result.failures[:8])
-                try:
-                    await self.application.bot.send_message(chat_id=owner_chat_id, text=summary)
-                except TelegramError:
-                    LOGGER.warning("ارسال گزارش نهایی به مالک ناموفق بود: %s", owner_chat_id)
+                await self._notify_owner_safe(owner_chat_id, summary)
 
             if on_finish:
                 try:
@@ -757,18 +763,43 @@ class BroadcastManager:
                     detail=f"retry_after={wait_seconds}s attempt={attempt}/{max_retry}",
                 )
                 if owner_chat_id:
-                    try:
-                        await self.application.bot.send_message(
-                            chat_id=owner_chat_id,
-                            text=(
-                                f"محدودیت تلگرام فعال شد برای گروه {chat_id}.\n"
+                    await self._notify_owner_safe(
+                        owner_chat_id,
+                        (
+                            f"محدودیت تلگرام فعال شد برای گروه {chat_id}.\n"
+                            f"{wait_seconds} ثانیه صبر می‌کنم و دوباره تلاش می‌کنم "
+                            f"(تلاش {attempt}/{max_retry})."
+                        ),
+                    )
+                await asyncio.sleep(wait_seconds + 1)
+                continue
+            except (TimedOut, NetworkError) as exc:
+                attempt += 1
+                wait_seconds = min(2 * attempt, 12)
+                self.storage.add_send_log(
+                    job_key=key,
+                    title=title,
+                    chat_id=chat_id,
+                    link=text,
+                    status="retry",
+                    detail=(
+                        f"network_retry={exc.__class__.__name__} "
+                        f"wait={wait_seconds}s attempt={attempt}/{max_retry}"
+                    ),
+                )
+                if owner_chat_id:
+                    now = time.monotonic()
+                    if now - self._last_failure_notify_at >= 8:
+                        self._last_failure_notify_at = now
+                        await self._notify_owner_safe(
+                            owner_chat_id,
+                            (
+                                f"⚠️ اختلال موقت شبکه در ارسال به گروه {chat_id}\n"
                                 f"{wait_seconds} ثانیه صبر می‌کنم و دوباره تلاش می‌کنم "
                                 f"(تلاش {attempt}/{max_retry})."
                             ),
                         )
-                    except TelegramError:
-                        pass
-                await asyncio.sleep(wait_seconds + 1)
+                await asyncio.sleep(wait_seconds)
                 continue
             except TelegramError as exc:
                 fail_message = f"{chat_id}: {exc}"
@@ -785,21 +816,18 @@ class BroadcastManager:
                     now = time.monotonic()
                     if now - self._last_failure_notify_at >= 8:
                         self._last_failure_notify_at = now
-                        try:
-                            await self.application.bot.send_message(
-                                chat_id=owner_chat_id,
-                                text=(
-                                    f"⚠️ هشدار ارسال\n"
-                                    f"گروه: {chat_id}\n"
-                                    f"خطا: {str(exc)[:300]}\n"
-                                    "برای توقف فوری /stop را بزن."
-                                ),
-                            )
-                        except TelegramError:
-                            pass
+                        await self._notify_owner_safe(
+                            owner_chat_id,
+                            (
+                                f"⚠️ هشدار ارسال\n"
+                                f"گروه: {chat_id}\n"
+                                f"خطا: {str(exc)[:300]}\n"
+                                "برای توقف فوری /stop را بزن."
+                            ),
+                        )
                 return False
 
-        fail_message = f"{chat_id}: تلاش مجدد بیش از حد مجاز شد (FloodControl)"
+        fail_message = f"{chat_id}: تلاش مجدد بیش از حد مجاز شد (خطای موقت)"
         result.failures.append(fail_message)
         self.storage.add_send_log(
             job_key=key,
@@ -807,7 +835,7 @@ class BroadcastManager:
             chat_id=chat_id,
             link=text,
             status="fail",
-            detail="retry-limit-exceeded",
+            detail="retry-limit-exceeded-transient",
         )
         return False
 
