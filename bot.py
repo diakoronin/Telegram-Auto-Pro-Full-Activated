@@ -602,7 +602,10 @@ class BroadcastManager:
         on_finish: Optional[Callable[[BroadcastResult], Awaitable[None]]],
     ) -> None:
         result = BroadcastResult(sent_ok=0, sent_fail=0, total=len(group_ids) * len(links), failures=[])
-        group_map = {group.chat_id: group for group in self.storage.list_groups()}
+        all_groups = await sync_groups_admin_status(
+            self.storage, self.application.bot, self.storage.list_groups()
+        )
+        group_map = {group.chat_id: group for group in all_groups}
         self._last_failure_notify_at = 0.0
         self._progress = {
             "key": key,
@@ -845,6 +848,36 @@ def get_ui_message_id(application: Application) -> Optional[int]:
 
 def set_ui_message_id(application: Application, message_id: int) -> None:
     get_storage(application).set_setting("ui_message_id", str(message_id))
+
+
+async def sync_groups_admin_status(
+    storage: Storage,
+    bot,
+    groups: list[GroupItem],
+) -> list[GroupItem]:
+    refreshed: list[GroupItem] = []
+    for group in groups:
+        is_active = group.is_active
+        is_admin = group.is_admin
+        try:
+            bot_member = await bot.get_chat_member(group.chat_id, bot.id)
+            is_admin = bot_member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+            if is_admin != group.is_admin:
+                storage.set_group_admin(group.chat_id, is_admin=is_admin)
+        except TelegramError:
+            is_active = False
+            is_admin = False
+            if group.is_active:
+                storage.set_group_active(group.chat_id, is_active=False)
+        refreshed.append(
+            GroupItem(
+                chat_id=group.chat_id,
+                title=group.title,
+                is_active=is_active,
+                is_admin=is_admin,
+            )
+        )
+    return refreshed
 
 
 def parse_owner_id_env() -> Optional[int]:
@@ -1205,7 +1238,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "menu:precheck":
-        groups = storage.list_groups()
+        groups = await sync_groups_admin_status(storage, context.bot, storage.list_groups())
         links = storage.list_links()
         if not groups:
             await query.answer("گروهی ثبت نشده.", show_alert=True)
@@ -1539,17 +1572,11 @@ async def refresh_admins_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.effective_message.reply_text("گروه فعال برای بررسی وجود ندارد.")
         return
 
-    updated_count = 0
-    for group in groups:
-        try:
-            bot_member = await context.bot.get_chat_member(group.chat_id, context.bot.id)
-            is_admin = bot_member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
-            storage.set_group_admin(group.chat_id, is_admin=is_admin)
-            updated_count += 1
-        except TelegramError:
-            storage.set_group_active(group.chat_id, is_active=False)
+    refreshed = await sync_groups_admin_status(storage, context.bot, groups)
+    admin_count = sum(1 for group in refreshed if group.is_active and group.is_admin)
     await update.effective_message.reply_text(
-        f"{len(groups)} گروه بررسی شد. وضعیت {updated_count} گروه بروزرسانی شد."
+        f"{len(groups)} گروه بررسی شد. "
+        f"{admin_count} گروه هم‌اکنون قابل ارسال هستند."
     )
 
 
@@ -1577,6 +1604,7 @@ async def selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     storage = get_storage(context.application)
     groups = storage.list_groups(only_active=True)
+    groups = await sync_groups_admin_status(storage, context.bot, groups)
     available_group_ids = {group.chat_id for group in groups}
     selected = context.user_data.get("selected_groups", set())
     if not isinstance(selected, set):
@@ -1599,6 +1627,10 @@ async def selector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         links = storage.list_links()
         if not links:
             await query.answer("هیچ لینکی ذخیره نشده.", show_alert=True)
+            return
+        selected = {group.chat_id for group in groups if group.chat_id in selected and group.is_admin}
+        if not selected:
+            await query.answer("هیچ گروه ادمین فعالی برای ارسال باقی نماند.", show_alert=True)
             return
         manager = get_manager(context.application)
         owner_chat_id = update.effective_chat.id if update.effective_chat else None
@@ -1671,8 +1703,13 @@ async def wizard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("اول لیست لینک را ارسال کن.", show_alert=True)
             return
         groups = storage.list_groups(only_active=True)
+        groups = await sync_groups_admin_status(storage, context.bot, groups)
         if not groups:
             await query.edit_message_text("هیچ گروه فعالی ندارید. ابتدا گروه‌ها را ثبت کن.")
+            return
+        groups = [group for group in groups if group.is_admin]
+        if not groups:
+            await query.edit_message_text("هیچ گروهی که ربات در آن ادمین باشد پیدا نشد.")
             return
         selected = {groups[0].chat_id}
         context.user_data["wizard_group_id"] = groups[0].chat_id
@@ -1693,6 +1730,7 @@ async def wizard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("ابتدا مرحله لینک‌ها را انجام بده.", show_alert=True)
             return
         groups = storage.list_groups(only_active=True)
+        groups = await sync_groups_admin_status(storage, context.bot, groups)
         group_ids = {group.chat_id for group in groups}
         if chat_id not in group_ids:
             await query.answer("گروه دیگر فعال نیست.", show_alert=True)
@@ -1715,6 +1753,7 @@ async def wizard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         groups = storage.list_groups(only_active=True)
+        groups = await sync_groups_admin_status(storage, context.bot, groups)
         group_ids = {group.chat_id for group in groups}
         if wizard_group_id not in group_ids:
             await query.answer("گروه انتخابی فعال نیست.", show_alert=True)
