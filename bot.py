@@ -41,6 +41,7 @@ import uvicorn
 LOGGER = logging.getLogger(__name__)
 DB_PATH = os.getenv("DB_PATH", "bot_data.sqlite3")
 SEND_DELAY_SECONDS = float(os.getenv("SEND_DELAY_SECONDS", "3.0"))
+MIN_SEND_GAP_SECONDS = max(float(os.getenv("MIN_SEND_GAP_SECONDS", "2.2")), 0.0)
 SCHEDULER_POLL_SECONDS = max(float(os.getenv("SCHEDULER_POLL_SECONDS", "5.0")), 1.0)
 MAX_CONCURRENT_BROADCASTS = max(int(os.getenv("MAX_CONCURRENT_BROADCASTS", "4")), 1)
 WEB_PANEL_ENABLED = os.getenv("WEB_PANEL_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
@@ -528,6 +529,8 @@ class BroadcastManager:
         self._lock = asyncio.Lock()
         self._progress: dict[str, object] | None = None
         self._last_failure_notify_at: float = 0.0
+        self._send_spacing_lock = asyncio.Lock()
+        self._next_send_at: float = 0.0
 
     def running_keys(self) -> list[str]:
         return sorted([key for key, task in self.running_tasks.items() if not task.done()])
@@ -712,6 +715,7 @@ class BroadcastManager:
         attempt = 0
         while attempt < max_retry:
             try:
+                await self._acquire_send_slot()
                 await self.application.bot.send_message(chat_id=chat_id, text=text)
                 self.storage.add_send_log(
                     job_key=key,
@@ -787,6 +791,18 @@ class BroadcastManager:
             detail="retry-limit-exceeded",
         )
         return False
+
+    async def _acquire_send_slot(self) -> None:
+        min_gap = max(SEND_DELAY_SECONDS, MIN_SEND_GAP_SECONDS)
+        if min_gap <= 0:
+            return
+        async with self._send_spacing_lock:
+            now = time.monotonic()
+            slot_time = max(now, self._next_send_at)
+            self._next_send_at = slot_time + min_gap
+        wait_seconds = max(0.0, slot_time - time.monotonic())
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
 
 
 def get_storage(application: Application) -> Storage:
