@@ -40,7 +40,7 @@ import uvicorn
 
 LOGGER = logging.getLogger(__name__)
 DB_PATH = os.getenv("DB_PATH", "bot_data.sqlite3")
-SEND_DELAY_SECONDS = float(os.getenv("SEND_DELAY_SECONDS", "1.0"))
+SEND_DELAY_SECONDS = float(os.getenv("SEND_DELAY_SECONDS", "3.0"))
 SCHEDULER_POLL_SECONDS = max(float(os.getenv("SCHEDULER_POLL_SECONDS", "5.0")), 1.0)
 MAX_CONCURRENT_BROADCASTS = max(int(os.getenv("MAX_CONCURRENT_BROADCASTS", "4")), 1)
 WEB_PANEL_ENABLED = os.getenv("WEB_PANEL_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
@@ -2305,6 +2305,7 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CommandHandler("register", register_group_command))
     app.add_handler(CallbackQueryHandler(selector_callback, pattern=r"^sel:"))
     app.add_handler(CallbackQueryHandler(wizard_callback, pattern=r"^wiz:"))
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^manage:"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"))
     app.add_handler(ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, private_text_handler))
