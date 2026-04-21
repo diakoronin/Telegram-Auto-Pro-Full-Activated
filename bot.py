@@ -288,6 +288,19 @@ class Storage:
             conn.executemany("INSERT INTO links(url) VALUES(?)", [(url,) for url in links])
             conn.commit()
 
+    def add_links(self, links: list[str]) -> tuple[int, int]:
+        inserted = 0
+        duplicates = 0
+        with self._connect() as conn:
+            for url in links:
+                cursor = conn.execute("INSERT OR IGNORE INTO links(url) VALUES(?)", (url,))
+                if cursor.rowcount and cursor.rowcount > 0:
+                    inserted += 1
+                else:
+                    duplicates += 1
+            conn.commit()
+        return inserted, duplicates
+
     def list_links(self) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute("SELECT url FROM links ORDER BY id").fetchall()
@@ -1474,8 +1487,15 @@ async def set_links_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     storage = get_storage(context.application)
-    storage.replace_links(links)
-    await update.effective_message.reply_text(f"{len(links)} لینک با موفقیت ذخیره شد.")
+    inserted, duplicates = storage.add_links(links)
+    total_links = len(storage.list_links())
+    await update.effective_message.reply_text(
+        "لینک‌ها پردازش شدند.\n"
+        f"کل ورودی معتبر: {len(links)}\n"
+        f"جدید اضافه شد: {inserted}\n"
+        f"تکراری (قبلاً موجود): {duplicates}\n"
+        f"مجموع لینک‌های ذخیره‌شده: {total_links}"
+    )
 
 
 async def set_links_from_document(
@@ -1535,6 +1555,36 @@ async def setlinksfile_command(update: Update, context: ContextTypes.DEFAULT_TYP
         "حالت دریافت فایل فعال شد (ارسال مرحله‌ای).\n"
         "الان یک فایل txt بفرست (هر خط یک لینک).\n"
         "برای لغو: /cancel"
+    )
+
+
+async def replacelinks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await owner_required(update, context):
+        return
+    payload = (update.effective_message.text or "").split(maxsplit=1)
+    if len(payload) < 2 or not payload[1].strip():
+        await update.effective_message.reply_text(
+            "نحوه استفاده:\n"
+            "/replacelinks <متن لینک‌ها>\n\n"
+            "یا در پنل وب، کادر لینک‌ها را خالی کرده و لیست جدید را جایگزین کن."
+        )
+        return
+    links, invalid_lines = parse_links(payload[1].strip())
+    if invalid_lines:
+        preview = "\n".join(invalid_lines[:10])
+        await update.effective_message.reply_text(
+            "چند خط نامعتبر شناسایی شد.\n"
+            "فرمت‌های قابل قبول: http/https و همچنین vmess/vless/trojan/ss/ssr و مشابه.\n"
+            f"{preview}"
+        )
+        return
+    if not links:
+        await update.effective_message.reply_text("هیچ لینک معتبری پیدا نشد.")
+        return
+    storage = get_storage(context.application)
+    storage.replace_links(links)
+    await update.effective_message.reply_text(
+        f"لیست لینک‌ها کامل جایگزین شد.\nتعداد جدید: {len(links)}"
     )
 
 
@@ -2399,8 +2449,15 @@ def create_web_app(storage: Storage) -> FastAPI:
         links, invalid = parse_links(str(form.get("links_text", "")))
         if invalid:
             return RedirectResponse(url=_panel_url("/", "برخی خطوط لینک نامعتبر هستند"), status_code=303)
-        storage.replace_links(links)
-        return RedirectResponse(url=_panel_url("/", "لینک‌ها ذخیره شدند"), status_code=303)
+        inserted, duplicates = storage.add_links(links)
+        total_links = len(storage.list_links())
+        return RedirectResponse(
+            url=_panel_url(
+                "/",
+                f"پردازش لینک‌ها انجام شد | جدید: {inserted} | تکراری: {duplicates} | مجموع: {total_links}",
+            ),
+            status_code=303,
+        )
 
     @app.post(f"{panel_prefix}/services/add")
     async def add_service(request: Request) -> RedirectResponse:
@@ -2520,6 +2577,7 @@ def build_application(storage: Storage, configured_owner_id: Optional[int]) -> A
     app.add_handler(CommandHandler("whoami", whoami_command))
     app.add_handler(CommandHandler("claim", claim_command))
     app.add_handler(CommandHandler("setlinks", setlinks_command))
+    app.add_handler(CommandHandler("replacelinks", replacelinks_command))
     app.add_handler(CommandHandler("setlinksfile", setlinksfile_command))
     app.add_handler(CommandHandler("links", links_command))
     app.add_handler(CommandHandler("groups", groups_command))
