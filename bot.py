@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from collections import Counter
 import hmac
 import json
 import logging
@@ -640,6 +641,8 @@ class BroadcastManager:
                 group_index = 0
                 for group_id in group_ids:
                     group_index += 1
+                    group_sent_ok = 0
+                    group_sent_fail = 0
                     if self._progress is not None:
                         self._progress["current_group"] = group_id
                     known_group = group_map.get(group_id)
@@ -654,6 +657,7 @@ class BroadcastManager:
                         result.failures.append(fail_message)
                         for link in links:
                             result.sent_fail += 1
+                            group_sent_fail += 1
                             self.storage.add_send_log(
                                 job_key=key,
                                 title=title,
@@ -671,6 +675,15 @@ class BroadcastManager:
                                 "برای توقف فوری /stop را بزن."
                             ),
                         )
+                        await self._notify_owner_safe(
+                            owner_chat_id,
+                            (
+                                f"{title}: گروه {group_index}/{len(group_ids)} پردازش شد ({group_id})\n"
+                                f"موفق این گروه: {group_sent_ok}\n"
+                                f"ناموفق این گروه: {group_sent_fail}\n"
+                                "هشدار: هیچ لینکی به این گروه ارسال نشد."
+                            ),
+                        )
                         continue
                     for link in links:
                         sent = await self._send_with_retry(
@@ -683,8 +696,10 @@ class BroadcastManager:
                         )
                         if sent:
                             result.sent_ok += 1
+                            group_sent_ok += 1
                         else:
                             result.sent_fail += 1
+                            group_sent_fail += 1
                         if self._progress is not None:
                             self._progress["sent_ok"] = result.sent_ok
                             self._progress["sent_fail"] = result.sent_fail
@@ -692,7 +707,16 @@ class BroadcastManager:
                             await asyncio.sleep(SEND_DELAY_SECONDS)
                     await self._notify_owner_safe(
                         owner_chat_id,
-                        f"{title}: گروه {group_index}/{len(group_ids)} تمام شد ({group_id})",
+                        (
+                            f"{title}: گروه {group_index}/{len(group_ids)} پردازش شد ({group_id})\n"
+                            f"موفق این گروه: {group_sent_ok}\n"
+                            f"ناموفق این گروه: {group_sent_fail}"
+                            + (
+                                "\nهشدار: هیچ لینکی به این گروه ارسال نشد."
+                                if group_sent_ok == 0 and group_sent_fail > 0
+                                else ""
+                            )
+                        ),
                     )
         except asyncio.CancelledError:
             result.stopped = True
@@ -713,8 +737,21 @@ class BroadcastManager:
                     summary += "\nوضعیت: متوقف شد"
                 if result.error:
                     summary += f"\nخطا: {result.error}"
+                if result.sent_ok == 0:
+                    summary += "\nهشدار: هیچ پیامی با موفقیت ارسال نشد."
                 if result.failures:
                     summary += "\nچند خطای اول:\n" + "\n".join(result.failures[:8])
+                    reason_counts: Counter[str] = Counter()
+                    for failure in result.failures:
+                        normalized = failure.split(":", 1)[1].strip() if ":" in failure else failure
+                        if normalized:
+                            reason_counts[normalized] += 1
+                    if reason_counts:
+                        summary += "\nدلایل پرتکرار:\n"
+                        summary += "\n".join(
+                            f"- {reason[:180]} ×{count}"
+                            for reason, count in reason_counts.most_common(3)
+                        )
                 await self._notify_owner_safe(owner_chat_id, summary)
 
             if on_finish:
