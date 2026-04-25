@@ -1,0 +1,14 @@
+{
+  "v2ray": {
+    "android": "https://t.me/ActivenNet/710",
+    "ios": "https://t.me/ActivenNet/711",
+    "windows": "https://t.me/ActivenNet/712",
+    "mac": "https://t.me/ActivenNet/711"
+  },
+  "wireguard": {
+    "android": "https://t.me/ActivenNet/715",
+    "ios": "https://t.me/ActivenNet/716",
+    "windows": "https://t.me/ActivenNet/719",
+    "mac": "https://t.me/ActivenNet/720"
+  }
+}
