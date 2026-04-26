@@ -2,7 +2,32 @@
 
 Python 3.11+ bot built with **aiogram 3** and **SQLAlchemy 2 (async)**. Wallet charges go through **pending payment requests** with **row-locked approve/reject**; purchases reserve a link with **`SELECT … FOR UPDATE`** (PostgreSQL: **`SKIP LOCKED`**) and update wallet in the **same transaction**.
 
-## Quick start
+## One-line install on a Linux server (like panel scripts)
+
+From the server (Debian/Ubuntu: installs `python3-venv`, `pip`, `git` via `apt` if needed):
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/scripts/install.sh" | bash -s -- "$HOME/telegram-sales-bot" main
+```
+
+- First argument: install directory (default `~/telegram-sales-bot`).
+- Second argument: git branch (default `main`).
+- Override clone URL: `REPO_URL=https://github.com/you/fork.git curl ... | bash -s -- /opt/bot main`
+
+Then edit `.env` and start:
+
+```bash
+nano ~/telegram-sales-bot/.env
+~/telegram-sales-bot/scripts/run.sh
+```
+
+Optional **systemd** (runs as the user who invoked `sudo`, uses `.env`):
+
+```bash
+cd ~/telegram-sales-bot && sudo bash scripts/install-systemd.sh
+```
+
+## Quick start (manual)
 
 1. Copy `.env.example` to `.env` and fill variables (never commit `.env`).
 2. Use an async database URL, for example:
