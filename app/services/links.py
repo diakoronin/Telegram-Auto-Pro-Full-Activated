@@ -23,10 +23,10 @@ async def pick_unused_link(
         .order_by(Link.id.asc())
         .limit(1)
     )
-    if bind is not None and bind.dialect.name == "postgresql":
-        stmt = stmt.with_for_update(skip_locked=True)
-    else:
-        stmt = stmt.with_for_update()
+    # Do not use SKIP LOCKED here: under contention every visible row can be
+    # skipped in one statement and the query returns no row while COUNT(*)
+    # without FOR UPDATE still shows stock (confusing "ناموجود" for users).
+    stmt = stmt.with_for_update()
     r = await session.execute(stmt)
     return r.scalar_one_or_none()
 
