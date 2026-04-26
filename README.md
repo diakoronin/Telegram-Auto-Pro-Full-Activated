@@ -44,6 +44,21 @@ pkill -f "telegram-sales-bot/main.py" || true
 
 If you use **webhook** elsewhere for this bot, switch that off or use a different bot token for this codebase.
 
+### Update the bot on the server (pull + deps + safe restart)
+
+Stops the systemd service (if running) and any manual `main.py` for this folder **before** `git pull` so Telegram does not see two pollers.
+
+```bash
+cd /root/telegram-sales-bot   # your install path
+bash scripts/update.sh
+```
+
+- If you only use `python main.py` (no systemd), the script still kills that process before pull, then tells you to start again.
+- `SKIP_SYSTEMD=1 bash scripts/update.sh` — only git + pip, no systemctl.
+- `SKIP_PIP=1 bash scripts/update.sh` — only git pull + restart.
+
+Requires `sudo` for `systemctl` when not root (or run the whole script as root).
+
 If the bot **does not start**, run (from the install directory, as the project owner):
 
 ```bash
