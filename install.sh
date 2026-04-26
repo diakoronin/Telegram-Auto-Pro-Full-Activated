@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# One-liner style (similar to 3x-ui). Must run as root. Use SSH with TTY for BOT_TOKEN/OWNER_ID.
+# One-liner style. Must run as root. Use SSH with TTY for BOT_TOKEN/OWNER_ID.
 #
-#   sudo bash <(curl -Ls https://raw.githubusercontent.com/OWNER/REPO/BRANCH/install.sh)
-#   sudo bash <(curl -Ls .../install.sh) /root/telegram-sales-bot main
+# Prefer PIPE (works everywhere; sudo + process substitution often breaks /dev/fd):
+#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/BRANCH/install.sh | sudo bash -s --
+#   curl -fsSL .../install.sh | sudo bash -s -- /opt/telegram-sales-bot main
+#
+# If already root, drop sudo:
+#   curl -fsSL .../install.sh | bash -s -- /root/telegram-sales-bot main
 #
 # Optional env: REPO=owner/name  BRANCH=main  FRESH_DROP_DB=1  SAKA_BOT_UNIT=name.service
 

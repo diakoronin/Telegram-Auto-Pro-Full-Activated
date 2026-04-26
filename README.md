@@ -1,20 +1,26 @@
 # Telegram sales bot (security-first)
 
-## One-liner install (3x-ui style, must be **root**)
+## One-liner install (must be **root**)
 
-Use the branch that exists on GitHub (example: feature branch until merge to `main`):
-
-```bash
-sudo bash <(curl -Ls https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh)
-```
-
-With custom install path and branch:
+**Do not use** `sudo bash <(curl …)` — on many systems `sudo` breaks process substitution (`/dev/fd/63: No such file or directory`). Use a **pipe** instead:
 
 ```bash
-sudo bash <(curl -Ls https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh) /opt/telegram-sales-bot main
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh | sudo bash -s --
 ```
 
-Optional: `REPO=org/repo FRESH_DROP_DB=1` before `sudo` (see `scripts/fresh-install.sh`).
+Custom path and branch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh | sudo bash -s -- /opt/telegram-sales-bot main
+```
+
+You are already **root** on the VPS — you can omit `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh | bash -s --
+```
+
+Optional: `FRESH_DROP_DB=1 curl ... | sudo bash -s -- …` (see `scripts/fresh-install.sh`).
 
 After install: `saka-bot status` / `saka-bot update`.
 
