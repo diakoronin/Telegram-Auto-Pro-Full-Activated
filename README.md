@@ -2,32 +2,37 @@
 
 Python 3.11+ bot built with **aiogram 3** and **SQLAlchemy 2 (async)**. Wallet charges go through **pending payment requests** with **row-locked approve/reject**; purchases reserve a link with **`SELECT … FOR UPDATE`** (PostgreSQL: **`SKIP LOCKED`**) and update wallet in the **same transaction**.
 
-## One-line install on a Linux server (like panel scripts)
+## One-line / full install on a Linux server (Debian/Ubuntu)
 
-From the server (Debian/Ubuntu: installs `python3-venv`, `pip`, `git` via `apt` if needed):
+The **`scripts/install.sh`** script (run as **root** with `sudo`) will:
 
-```bash
-# After this branch is merged into main, use main. Until then use your branch name:
-BRANCH="cursor/telegram-sales-bot-security-712f"
-curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/${BRANCH}/scripts/install.sh" | bash -s -- "$HOME/telegram-sales-bot" "$BRANCH"
-```
-
-- First argument: install directory (default `~/telegram-sales-bot`).
-- Second argument: git branch (e.g. `main` once merged).
-- Override clone URL: `REPO_URL=https://github.com/you/fork.git curl ... | bash -s -- /opt/bot main`
-
-Then edit `.env` and start:
+- Install **PostgreSQL** if missing and start it
+- Create a **random** DB user, password, and database name
+- Clone/update the repo, create **`.venv`**, `pip install -r requirements.txt`
+- Ask only **`BOT_TOKEN`** (hidden) and **`OWNER_ID`** on the terminal, then write **`.env`**
+- Save a copy of DB URL in **`.db_credentials`** (mode `600`) for backup
+- `chown` the install tree to **`SUDO_USER`** when you used `sudo`
 
 ```bash
-nano ~/telegram-sales-bot/.env
-~/telegram-sales-bot/scripts/run.sh
+BRANCH="main"   # or your feature branch until merge
+curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/${BRANCH}/scripts/install.sh" | sudo bash -s -- /opt/telegram-sales-bot "$BRANCH"
 ```
 
-Optional **systemd** (runs as the user who invoked `sudo`, uses `.env`):
+Use an SSH session so **`/dev/tty`** exists for prompts. If you pipe without a TTY, set `NONINTERACTIVE=1` and fill `.env` manually.
+
+Then (as the same user that owns the folder):
 
 ```bash
-cd ~/telegram-sales-bot && sudo bash scripts/install-systemd.sh
+/opt/telegram-sales-bot/scripts/run.sh
 ```
+
+Optional **systemd**:
+
+```bash
+cd /opt/telegram-sales-bot && sudo bash scripts/install-systemd.sh
+```
+
+Override clone URL: `REPO_URL=https://github.com/you/fork.git curl ... | sudo bash -s -- /opt/bot main`
 
 ## Quick start (manual)
 
