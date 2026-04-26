@@ -5,7 +5,18 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Admin, AdminRole, Purchase, PurchaseStatus, User, WalletTransaction, WalletTransactionType
+from app.db.models import (
+    Admin,
+    AdminRole,
+    PanelAccount,
+    Purchase,
+    PurchaseStatus,
+    User,
+    UserService,
+    UserServiceStatus,
+    WalletTransaction,
+    WalletTransactionType,
+)
 
 
 async def manual_adjust_wallet(
@@ -91,7 +102,7 @@ async def refund_purchase(
         )
     )
 
-    if return_link:
+    if return_link and purchase.link_id is not None:
         from app.db.models import Link, LinkStatus
 
         lr = await session.execute(
@@ -100,6 +111,20 @@ async def refund_purchase(
         link = lr.scalar_one_or_none()
         if link and link.status == LinkStatus.USED:
             link.status = LinkStatus.RETURNED
+
+    if purchase.user_service_id is not None:
+        us = await session.get(UserService, purchase.user_service_id)
+        if us is not None:
+            us.status = UserServiceStatus.REFUNDED
+            us.subscription_enabled = False
+        pa_r = await session.execute(
+            select(PanelAccount).where(
+                PanelAccount.user_service_id == purchase.user_service_id,
+                PanelAccount.is_active.is_(True),
+            )
+        )
+        for pa in pa_r.scalars().all():
+            pa.is_active = False
 
     await session.flush()
     return True, None

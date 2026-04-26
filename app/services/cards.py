@@ -19,6 +19,15 @@ async def pick_public_card_for_invoice(session: AsyncSession) -> PaymentCard | N
 
 
 def card_display_number(card: PaymentCard) -> str:
+    """Admin list: prefer full if present else masked."""
     if card.card_number_full:
         return card.card_number_full
+    return card.card_number_masked
+
+
+def invoice_card_number_for_user(card: PaymentCard, *, show_full: bool) -> str:
+    """User invoice: full digits when configured and stored; else masked (admin must fix DB)."""
+    full = (card.card_number_full or "").strip()
+    if show_full and full and len(full) >= 10:
+        return full
     return card.card_number_masked

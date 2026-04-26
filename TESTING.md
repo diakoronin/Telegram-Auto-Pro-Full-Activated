@@ -40,3 +40,22 @@ Run against a staging bot and database. Use a normal user account and separate a
 ## Footer / locale
 
 - [ ] With `FOOTER_ENABLED=true` and `TIMEZONE=Asia/Tehran`, user and admin messages end with Jalali date/time footer.
+
+## API panels & stable subscription (needs real panel)
+
+Prereq: PostgreSQL recommended; set `PUBLIC_BASE_URL`, bind subscription port, configure Marzban JSON on `panels` or 3x-ui `servers.inbound_id`.
+
+- [ ] Owner: `/paneladd marzban ...` then `/paneltest PANEL_ID` — **Needs real credentials**
+- [ ] Owner: `/serverbind SERVER_ID PANEL_ID [inbound_id]` for 3x-ui
+- [ ] User shop: only servers with `panel_id`; purchase creates `user_services` row; success shows stable `/sub/...` URL only (no raw panel URL as “permanent”).
+- [ ] `curl http://127.0.0.1:8080/health` returns JSON with database ok/fail.
+- [ ] `curl` invalid `/sub/token` → empty/404 safe response.
+- [ ] Blocked user: `/sub` returns empty for their token.
+- [ ] Traffic sync: logs `traffic_sync` every `TRAFFIC_SYNC_INTERVAL_SECONDS` (watch `logs/bot.log`).
+- [ ] Location change: from service details → pick server → same subscription URL; `/sub` returns new configs.
+- [ ] Hourly backup: owner receives zip in private chat when `AUTO_BACKUP_ENABLED=true`.
+- [ ] `python3 tests/test_quota_calc.py` — local quota math (no network).
+
+## bot-manager.sh
+
+- [ ] Run `./bot-manager.sh` from repo root; menu appears; option 8 curls `/health`.

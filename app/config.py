@@ -50,13 +50,36 @@ class Settings:
     rate_limit_purchase_minute: int
     rate_limit_support_minute: int
     rate_limit_admin_import_minute: int
-    # Per-service stable subscription (PUBLIC_BASE_URL/sub/{subscription_token})
     public_base_url: str
     subscription_endpoint_enabled: bool
     sub_base64_enabled: bool
     subscription_bind_host: str
     subscription_bind_port: int
     panel_credential_encryption_key: str
+    multi_backend_active: bool
+    traffic_sync_interval_seconds: int
+    traffic_safety_buffer_mb: int
+    traffic_sync_batch_size: int
+    location_change_enabled: bool
+    location_change_cooldown_hours: int
+    location_change_max_per_month: int
+    location_change_require_admin_approval: bool
+    location_change_fee: int
+    show_full_card_number_to_user: bool
+    debug_card_logging: bool
+    debug_mode: bool
+    log_level: str
+    log_to_file: bool
+    log_dir: str
+    auto_backup_enabled: bool
+    auto_backup_interval_minutes: int
+    send_env_backup: bool
+    backup_unused_links: bool
+    sub_rate_limit_per_minute: int
+    sub_ip_rate_limit_per_minute: int
+    delete_webhook_drop_pending: bool
+    hourly_backup_retention: int
+    daily_backup_retention: int
 
 
 def load_settings() -> Settings:
@@ -115,4 +138,30 @@ def load_settings() -> Settings:
         subscription_bind_host=sub_host,
         subscription_bind_port=sub_port,
         panel_credential_encryption_key=panel_key,
+        multi_backend_active=_bool("MULTI_BACKEND_ACTIVE", False),
+        traffic_sync_interval_seconds=max(60, _int("TRAFFIC_SYNC_INTERVAL_SECONDS", 300)),
+        traffic_safety_buffer_mb=max(0, _int("TRAFFIC_SAFETY_BUFFER_MB", 200)),
+        traffic_sync_batch_size=max(1, min(500, _int("TRAFFIC_SYNC_BATCH_SIZE", 50))),
+        location_change_enabled=_bool("LOCATION_CHANGE_ENABLED", True),
+        location_change_cooldown_hours=max(1, _int("LOCATION_CHANGE_COOLDOWN_HOURS", 24)),
+        location_change_max_per_month=max(1, _int("LOCATION_CHANGE_MAX_PER_MONTH", 3)),
+        location_change_require_admin_approval=_bool(
+            "LOCATION_CHANGE_REQUIRE_ADMIN_APPROVAL", False
+        ),
+        location_change_fee=max(0, _int("LOCATION_CHANGE_FEE", 0)),
+        show_full_card_number_to_user=_bool("SHOW_FULL_CARD_NUMBER_TO_USER", True),
+        debug_card_logging=_bool("DEBUG_CARD_LOGGING", False),
+        debug_mode=_bool("DEBUG_MODE", False),
+        log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
+        log_to_file=_bool("LOG_TO_FILE", True),
+        log_dir=os.getenv("LOG_DIR", "logs").strip() or "logs",
+        auto_backup_enabled=_bool("AUTO_BACKUP_ENABLED", True),
+        auto_backup_interval_minutes=max(15, _int("AUTO_BACKUP_INTERVAL_MINUTES", 60)),
+        send_env_backup=_bool("SEND_ENV_BACKUP", False),
+        backup_unused_links=_bool("BACKUP_UNUSED_LINKS", False),
+        sub_rate_limit_per_minute=max(10, _int("SUB_RATE_LIMIT_PER_MINUTE", 120)),
+        sub_ip_rate_limit_per_minute=max(30, _int("SUB_IP_RATE_LIMIT_PER_MINUTE", 300)),
+        delete_webhook_drop_pending=_bool("DELETE_WEBHOOK_DROP_PENDING", True),
+        hourly_backup_retention=max(1, _int("HOURLY_BACKUP_RETENTION", 48)),
+        daily_backup_retention=max(1, _int("DAILY_BACKUP_RETENTION", 30)),
     )

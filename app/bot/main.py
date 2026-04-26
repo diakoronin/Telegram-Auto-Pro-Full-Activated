@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import logging.handlers
+import sys
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -15,25 +19,92 @@ from app.bot.middlewares.rate_limit_user import UserRateLimitMiddleware
 from app.bot.middlewares.seller_scope import SellerUserFlowBlockMiddleware
 from app.bot.middlewares.settings import SettingsMiddleware
 from app.config import load_settings
-from app.db.base import init_db
+from app.db.base import get_session_factory, init_db
 from app import texts_fa as T
 from app.message_format import format_message
+from app.services.owner_backup import send_backup_to_owner
+from app.services.traffic_sync import sync_active_services_batch
+from app.structured_log import RequestIdFilter
 from app.subscription_api import create_subscription_app
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging(settings) -> None:
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(level)
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s rid=%(request_id)s %(message)s",
+        defaults={"request_id": "-"},
+    )
+    root.handlers.clear()
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+    sh.addFilter(RequestIdFilter())
+    root.addHandler(sh)
+    if settings.log_to_file:
+        log_dir = Path(settings.log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        for name, fname in (
+            ("", "bot.log"),
+            ("app.panel", "panel_api.log"),
+            ("app.errors", "errors.log"),
+        ):
+            lg = logging.getLogger(name) if name else root
+            fh = logging.handlers.RotatingFileHandler(
+                log_dir / fname,
+                maxBytes=8 * 1024 * 1024,
+                backupCount=5,
+                encoding="utf-8",
+            )
+            fh.setFormatter(fmt)
+            fh.addFilter(RequestIdFilter())
+            lg.addHandler(fh)
+    logging.getLogger("app.errors").setLevel(logging.ERROR)
+
+
+async def _traffic_loop(bot: Bot, settings) -> None:
+    factory = get_session_factory(settings.database_url)
+    while True:
+        try:
+            await asyncio.sleep(settings.traffic_sync_interval_seconds)
+            async with factory() as session:
+                await sync_active_services_batch(
+                    session,
+                    settings,
+                    bot=bot,
+                    batch_size=settings.traffic_sync_batch_size,
+                )
+                await session.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("traffic_sync loop error")
+
+
+async def _backup_loop(bot: Bot, settings) -> None:
+    while True:
+        try:
+            await asyncio.sleep(settings.auto_backup_interval_minutes * 60)
+            if settings.auto_backup_enabled:
+                ok, err = await send_backup_to_owner(bot, settings)
+                if not ok:
+                    logger.error("auto backup failed: %s", err)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("backup loop error")
 
 
 async def main() -> None:
     settings = load_settings()
+    _configure_logging(settings)
     await init_db(settings.database_url)
 
     bot = Bot(settings.bot_token, default=DefaultBotProperties())
     try:
-        await bot.delete_webhook(drop_pending_updates=False)
+        await bot.delete_webhook(drop_pending_updates=settings.delete_webhook_drop_pending)
     except Exception:
         logger.debug("delete_webhook skipped")
 
@@ -52,7 +123,7 @@ async def main() -> None:
     @dp.errors()
     async def _errors(event: ErrorEvent) -> None:
         exc = event.exception
-        logger.exception("Unhandled exception: %s", exc)
+        logging.getLogger("app.errors").exception("Unhandled: %s", exc)
         try:
             if event.update.message:
                 await event.update.message.answer(
@@ -79,20 +150,30 @@ async def main() -> None:
         except Exception:
             logger.debug("owner notify skipped")
 
-    if settings.subscription_endpoint_enabled:
-        import uvicorn
+    traffic_task = asyncio.create_task(_traffic_loop(bot, settings))
+    backup_task = asyncio.create_task(_backup_loop(bot, settings))
+    try:
+        if settings.subscription_endpoint_enabled:
+            import uvicorn
 
-        app = create_subscription_app(settings)
-        cfg = uvicorn.Config(
-            app,
-            host=settings.subscription_bind_host,
-            port=settings.subscription_bind_port,
-            log_level="info",
-        )
-        server = uvicorn.Server(cfg)
-        await asyncio.gather(server.serve(), dp.start_polling(bot))
-    else:
-        await dp.start_polling(bot)
+            app = create_subscription_app(settings)
+            cfg = uvicorn.Config(
+                app,
+                host=settings.subscription_bind_host,
+                port=settings.subscription_bind_port,
+                log_level="warning",
+            )
+            server = uvicorn.Server(cfg)
+            await asyncio.gather(server.serve(), dp.start_polling(bot))
+        else:
+            await dp.start_polling(bot)
+    finally:
+        traffic_task.cancel()
+        backup_task.cancel()
+        with contextlib.suppress(Exception):
+            await traffic_task
+        with contextlib.suppress(Exception):
+            await backup_task
 
 
 if __name__ == "__main__":

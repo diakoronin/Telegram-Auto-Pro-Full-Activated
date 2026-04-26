@@ -8,6 +8,7 @@ class ChargeStates(StatesGroup):
 
 
 class SupportStates(StatesGroup):
+    pick_service = State()
     waiting_message = State()
 
 
@@ -42,3 +43,4 @@ class AdminStates(StatesGroup):
     card_access_forward_wait = State()
     card_access_tid_wait = State()
     card_access_revoke_tid = State()
+    ticket_reply_text = State()

@@ -10,6 +10,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     FSInputFile,
     InlineKeyboardButton,
@@ -60,6 +61,8 @@ from app.services.stock import get_all_servers_stock_summary, get_server_stock_s
 from app.services.users import get_admin_by_telegram
 from app.services.cards import card_display_number
 from app.services.stock_alerts import run_stock_check_after_commit
+from app.services.owner_backup import send_backup_to_owner
+from app.services.sales_csv import export_purchases_csv
 from app.services.wallet import manual_adjust_wallet, refund_purchase
 from app.validation import (
     ValidationError,
@@ -123,6 +126,7 @@ def _kb_cat_users(admin: Admin) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=T.ADM_USERS, callback_data="adm:users")],
         [InlineKeyboardButton(text=T.ADM_PAY_REQS, callback_data="adm:pay_reqs")],
+        [InlineKeyboardButton(text="🎫 تیکت‌های پشتیبانی", callback_data="adm:tickets")],
     ]
     if admin.role == AdminRole.OWNER:
         rows.insert(1, [InlineKeyboardButton(text=T.ADM_CARDS, callback_data="adm:cards")])
@@ -154,6 +158,9 @@ def _kb_cat_mgmt(admin: Admin) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text=T.ADM_ADMINS, callback_data="adm:admins")])
         rows.append([InlineKeyboardButton(text="💸 بازپرداخت خرید", callback_data="adm:refund")])
         rows.append([InlineKeyboardButton(text="🗑 حذف ادمین", callback_data="adm:remove_admin")])
+        rows.append(
+            [InlineKeyboardButton(text="💾 ارسال بکاپ الان", callback_data="adm:owner_backup")]
+        )
     rows.append(
         [InlineKeyboardButton(text=T.ADM_SETTINGS, callback_data="adm:settings_stub")]
     )
@@ -323,6 +330,23 @@ async def cmd_admin(message: Message, session: AsyncSession, admin: Admin, setti
     )
     intro = f"{T.ADMIN_PANEL_TITLE}\n\n{T.ADMIN_PANEL_INTRO}"
     await message.answer(_afmt(settings, intro), reply_markup=_admin_root_kb(admin))
+
+
+@router.callback_query(F.data == "adm:owner_backup", IsOwner())
+async def cb_owner_backup_now(
+    callback: CallbackQuery, settings: Settings, after_commit: list, **kwargs
+) -> None:
+    bot = callback.bot
+
+    async def _send() -> None:
+        ok, err = await send_backup_to_owner(bot, settings)
+        if ok:
+            await callback.message.answer(_afmt(settings, "✅ بکاپ برای مالک ارسال شد."))
+        else:
+            await callback.message.answer(_afmt(settings, f"❌ ارسال بکاپ ناموفق: {err}"))
+
+    after_commit.append(_send)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "admin_home")
@@ -1226,7 +1250,11 @@ def _payment_card_detail_markup(c: PaymentCard) -> InlineKeyboardMarkup:
 
 def _payment_card_detail_text(c: PaymentCard) -> str:
     num = card_display_number(c)
-    return (
+    warn = ""
+    full = (c.card_number_full or "").strip()
+    if not full or len(full) < 16 or "*" in num:
+        warn = T.CARD_NUMBER_INCOMPLETE_ADMIN
+    base = (
         f"کارت #{c.id}\n"
         f"شماره: {num}\n"
         f"صاحب: {c.card_holder}\n"
@@ -1234,6 +1262,9 @@ def _payment_card_detail_text(c: PaymentCard) -> str:
         f"وضعیت: {'فعال ✅' if c.is_active else 'غیرفعال ❌'}\n"
         f"نمایش به کاربران: {'بله ✅' if c.is_public else 'خیر ❌'}"
     )
+    if warn:
+        return base + "\n\n" + warn
+    return base + T.CARD_ADMIN_DETAIL_NOTE
 
 
 @router.callback_query(F.data.startswith("adm:card:"), IsOwner())
@@ -1661,6 +1692,12 @@ def _sales_report_keyboard(period: str) -> InlineKeyboardMarkup:
                     callback_data="adm:sales_report:month",
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    text="📤 خروجی CSV",
+                    callback_data=f"adm:sales_csv:{period}",
+                )
+            ],
             [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:backup_menu")],
         ]
     )
@@ -1717,6 +1754,30 @@ def _render_sales_report_text(
         ]
     )
     return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("adm:sales_csv:"), IsManagerOrOwner())
+async def cb_sales_csv(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
+    period = callback.data.split(":", 2)[-1]
+    if period == "yesterday":
+        w = window_yesterday(settings)
+    elif period == "month":
+        w = window_this_month(settings)
+    else:
+        w = window_today(settings)
+    csv_s = await export_purchases_csv(session, start_utc=w.start_utc, end_utc=w.end_utc)
+    doc = BufferedInputFile(
+        csv_s.encode("utf-8-sig"), filename=f"sales_{period}.csv"
+    )
+    await callback.message.answer_document(
+        doc,
+        caption=_afmt(settings, f"خروجی CSV بازه: {w.label_fa}"),
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("adm:sales_report:"), IsManagerOrOwner())

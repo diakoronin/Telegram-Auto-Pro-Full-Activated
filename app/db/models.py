@@ -46,6 +46,7 @@ class LinkStatus(str, enum.Enum):
 
 
 class PurchaseStatus(str, enum.Enum):
+    PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
     REFUNDED = "refunded"
@@ -99,6 +100,8 @@ class Admin(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    __table_args__ = (Index("ix_admins_telegram_id", "telegram_id"),)
 
 
 class User(Base):
@@ -182,6 +185,7 @@ class Plan(Base):
         nullable=False,
         default=False,
     )
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -295,7 +299,7 @@ class Purchase(Base):
     custom_service_name: Mapped[str] = mapped_column(String(120), nullable=False)
     amount_paid: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[PurchaseStatus] = mapped_column(
-        Enum(PurchaseStatus), nullable=False, default=PurchaseStatus.COMPLETED
+        Enum(PurchaseStatus), nullable=False, default=PurchaseStatus.PENDING
     )
     is_refunded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     refund_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -371,6 +375,9 @@ class Panel(Base):
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     api_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Marzban: optional JSON for UserCreate proxies/inbounds (see Marzban API docs).
+    marzban_proxies_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    marzban_inbounds_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     verify_ssl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -435,6 +442,8 @@ class UserService(Base):
     subscription_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     location_change_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     location_change_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    location_change_month_key: Mapped[str] = mapped_column(String(7), nullable=False, default="")
+    location_change_month_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_location_change_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -538,6 +547,18 @@ class PendingConfirmation(Base):
     )
 
     __table_args__ = (Index("ix_pending_confirm_admin", "admin_telegram_id"),)
+
+
+class AppSetting(Base):
+    """Key-value runtime settings (e.g. legacy admin tools toggles)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class AuditLog(Base):

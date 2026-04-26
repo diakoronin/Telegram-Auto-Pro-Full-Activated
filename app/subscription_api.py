@@ -1,31 +1,26 @@
 """
-HTTP subscription endpoint: GET /sub/{subscription_token}
+HTTP subscription: GET /sub/{subscription_token}, GET /health.
 
-Each **API-managed** purchased service has its own row in ``user_services`` and its own
-``subscription_token``. This endpoint only reads those rows plus the active
-``panel_account`` — it never includes **manual stock links** (admin manual delivery),
-because those are not tied to ``user_services`` and the bot does not track their
-traffic or expiry centrally. Manual delivery stays a separate admin workflow.
+Rate-limited by token hash and client IP (DB buckets).
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
+import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, FastAPI, Response
-from sqlalchemy import select
+from fastapi import Depends, FastAPI, Request, Response
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.db.base import get_session_factory
-from app.db.models import (
-    PanelAccount,
-    User,
-    UserService,
-    UserServiceStatus,
-)
+from app.db.models import PanelAccount, User, UserService, UserServiceStatus
+from app.services.rate_limit import consume_rate
+from app.structured_log import mask_subscription_token
 
 logger = logging.getLogger("app.subscription")
 
@@ -47,16 +42,45 @@ def create_subscription_app(settings: Settings) -> FastAPI:
             yield session
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
+        rid = uuid.uuid4().hex[:12]
+        try:
+            await session.execute(text("SELECT 1"))
+            return {"status": "ok", "database": "ok", "request_id": rid}
+        except Exception as e:
+            logger.error("health DB fail rid=%s err=%s", rid, e)
+            return {"status": "degraded", "database": "error", "request_id": rid}
 
     @app.get("/sub/{subscription_token}")
     async def subscription(
+        request: Request,
         subscription_token: str,
         session: AsyncSession = Depends(get_session),
     ) -> Response:
+        rid = uuid.uuid4().hex[:12]
         tok = (subscription_token or "").strip()
+        tok_masked = mask_subscription_token(tok)
+        client_ip = request.client.host if request.client else "unknown"
+
         if not tok or len(tok) < 16:
+            logger.info("[SUBSCRIPTION] rid=%s token=%s invalid", rid, tok_masked)
+            return empty_response()
+
+        tok_hash = hashlib.sha256(tok.encode("utf-8")).hexdigest()[:40]
+        ok_tok = await consume_rate(
+            session,
+            key=f"sub:tok:{tok_hash}",
+            window_seconds=60,
+            max_count=settings.sub_rate_limit_per_minute,
+        )
+        ok_ip = await consume_rate(
+            session,
+            key=f"sub:ip:{client_ip}",
+            window_seconds=60,
+            max_count=settings.sub_ip_rate_limit_per_minute,
+        )
+        if not ok_tok or not ok_ip:
+            logger.warning("[SUBSCRIPTION] rid=%s rate_limited ip=%s", rid, client_ip)
             return empty_response()
 
         r = await session.execute(
@@ -67,14 +91,21 @@ def create_subscription_app(settings: Settings) -> FastAPI:
         )
         row = r.one_or_none()
         if row is None:
+            logger.info("[SUBSCRIPTION] rid=%s token=%s not_found", rid, tok_masked)
             return empty_response()
         us, u = row
 
-        if (
-            u.is_blocked
-            or not us.subscription_enabled
-            or us.status != UserServiceStatus.ACTIVE
-        ):
+        if u.is_blocked or not us.subscription_enabled:
+            logger.info("[SUBSCRIPTION] rid=%s blocked_or_disabled user=%s", rid, u.id)
+            return empty_response()
+
+        if us.status not in (UserServiceStatus.ACTIVE, UserServiceStatus.MIGRATING):
+            logger.info(
+                "[SUBSCRIPTION] rid=%s status=%s svc=%s",
+                rid,
+                us.status.value,
+                us.public_service_code,
+            )
             return empty_response()
 
         pa_r = await session.execute(
@@ -84,9 +115,17 @@ def create_subscription_app(settings: Settings) -> FastAPI:
                 PanelAccount.is_active.is_(True),
             )
             .order_by(PanelAccount.id.desc())
-            .limit(1)
         )
-        pa = pa_r.scalar_one_or_none()
+        actives = list(pa_r.scalars().all())
+        if len(actives) > 1 and not settings.multi_backend_active:
+            logger.error(
+                "[SUBSCRIPTION] rid=%s CRITICAL multiple_active user_service_id=%s count=%s",
+                rid,
+                us.id,
+                len(actives),
+            )
+            actives = [max(actives, key=lambda x: x.id)]
+        pa = actives[0] if actives else None
         if pa is None:
             return empty_response()
 
@@ -106,6 +145,12 @@ def create_subscription_app(settings: Settings) -> FastAPI:
         if us.expire_at is not None:
             expire_ts = int(us.expire_at.timestamp())
 
+        logger.info(
+            "[SUBSCRIPTION] rid=%s ok svc=%s token=%s",
+            rid,
+            us.public_service_code,
+            tok_masked,
+        )
         return Response(
             content=body or "",
             status_code=200,
