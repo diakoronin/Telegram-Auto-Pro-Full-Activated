@@ -7,11 +7,13 @@ Python 3.11+ bot built with **aiogram 3** and **SQLAlchemy 2 (async)**. Wallet c
 From the server (Debian/Ubuntu: installs `python3-venv`, `pip`, `git` via `apt` if needed):
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/scripts/install.sh" | bash -s -- "$HOME/telegram-sales-bot" main
+# After this branch is merged into main, use main. Until then use your branch name:
+BRANCH="cursor/telegram-sales-bot-security-712f"
+curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/${BRANCH}/scripts/install.sh" | bash -s -- "$HOME/telegram-sales-bot" "$BRANCH"
 ```
 
 - First argument: install directory (default `~/telegram-sales-bot`).
-- Second argument: git branch (default `main`).
+- Second argument: git branch (e.g. `main` once merged).
 - Override clone URL: `REPO_URL=https://github.com/you/fork.git curl ... | bash -s -- /opt/bot main`
 
 Then edit `.env` and start:
