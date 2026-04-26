@@ -32,6 +32,15 @@ Optional **systemd**:
 cd /opt/telegram-sales-bot && sudo bash scripts/install-systemd.sh
 ```
 
+If the bot **does not start**, run (from the install directory, as the project owner):
+
+```bash
+bash scripts/diagnose.sh
+# or: bash scripts/diagnose.sh /opt/telegram-sales-bot
+```
+
+It checks `.env`, imports, Postgres port, DB `SELECT 1`, and Telegram `getMe` **without printing secrets**.
+
 Override clone URL: `REPO_URL=https://github.com/you/fork.git curl ... | sudo bash -s -- /opt/bot main`
 
 ## Quick start (manual)
