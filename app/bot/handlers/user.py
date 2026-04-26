@@ -54,9 +54,9 @@ def _main_kb(*, card_view_allowed: bool = False) -> InlineKeyboardMarkup:
 async def cmd_start(
     message: Message,
     session: AsyncSession,
-    db_user: User | None,
-    admin: Admin | None,
     settings: Settings,
+    db_user: User | None = None,
+    admin: Admin | None = None,
 ) -> None:
     if message.from_user is None or db_user is None:
         return
@@ -75,7 +75,7 @@ async def cmd_start(
 
 
 @router.message(Command("menu"))
-async def cmd_menu(message: Message, db_user: User | None) -> None:
+async def cmd_menu(message: Message, db_user: User | None = None) -> None:
     if db_user is None:
         return
     await message.answer(
@@ -85,7 +85,7 @@ async def cmd_menu(message: Message, db_user: User | None) -> None:
 
 
 @router.callback_query(F.data == "main_menu")
-async def cb_main_menu(callback: CallbackQuery, db_user: User | None) -> None:
+async def cb_main_menu(callback: CallbackQuery, db_user: User | None = None) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
@@ -97,7 +97,9 @@ async def cb_main_menu(callback: CallbackQuery, db_user: User | None) -> None:
 
 
 @router.callback_query(F.data == "show_cards")
-async def cb_show_cards(callback: CallbackQuery, session: AsyncSession, db_user: User | None) -> None:
+async def cb_show_cards(
+    callback: CallbackQuery, session: AsyncSession, db_user: User | None = None
+) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
@@ -126,7 +128,7 @@ async def cb_show_cards(callback: CallbackQuery, session: AsyncSession, db_user:
 
 
 @router.callback_query(F.data == "wallet")
-async def cb_wallet(callback: CallbackQuery, db_user: User | None) -> None:
+async def cb_wallet(callback: CallbackQuery, db_user: User | None = None) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
@@ -142,7 +144,7 @@ async def cb_wallet(callback: CallbackQuery, db_user: User | None) -> None:
 
 
 @router.callback_query(F.data == "charge")
-async def cb_charge(callback: CallbackQuery, state: FSMContext, db_user: User | None) -> None:
+async def cb_charge(callback: CallbackQuery, state: FSMContext, db_user: User | None = None) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
@@ -162,7 +164,9 @@ async def cb_charge(callback: CallbackQuery, state: FSMContext, db_user: User | 
 
 
 @router.callback_query(F.data == "cancel_fsm")
-async def cb_cancel_fsm(callback: CallbackQuery, state: FSMContext, db_user: User | None) -> None:
+async def cb_cancel_fsm(
+    callback: CallbackQuery, state: FSMContext, db_user: User | None = None
+) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
@@ -179,8 +183,8 @@ async def charge_amount(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
-    db_user: User | None,
     settings: Settings,
+    db_user: User | None = None,
 ) -> None:
     if db_user is None:
         await state.clear()
@@ -218,9 +222,9 @@ async def charge_receipt_photo(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
-    db_user: User | None,
     settings: Settings,
     after_commit: list,
+    db_user: User | None = None,
 ) -> None:
     if db_user is None:
         await state.clear()
@@ -229,9 +233,9 @@ async def charge_receipt_photo(
         message,
         state,
         session,
-        db_user,
         settings,
         after_commit,
+        db_user,
         file_id=message.photo[-1].file_id,
         kind="photo",
     )
@@ -242,9 +246,9 @@ async def charge_receipt_doc(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
-    db_user: User | None,
     settings: Settings,
     after_commit: list,
+    db_user: User | None = None,
 ) -> None:
     if db_user is None:
         await state.clear()
@@ -257,9 +261,9 @@ async def charge_receipt_doc(
         message,
         state,
         session,
-        db_user,
         settings,
         after_commit,
+        db_user,
         file_id=doc.file_id,
         kind="document",
     )
@@ -269,9 +273,9 @@ async def _finalize_receipt(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
-    db_user: User | None,
     settings: Settings,
     after_commit: list,
+    db_user: User | None,
     *,
     file_id: str,
     kind: str,
@@ -404,9 +408,9 @@ async def cb_shop(callback: CallbackQuery, session: AsyncSession) -> None:
 async def cb_buy(
     callback: CallbackQuery,
     session: AsyncSession,
-    db_user: User | None,
     settings: Settings,
     after_commit: list,
+    db_user: User | None = None,
 ) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
@@ -468,7 +472,9 @@ async def cb_buy(
 
 
 @router.callback_query(F.data == "hist_purchases")
-async def cb_hist_purchases(callback: CallbackQuery, session: AsyncSession, db_user: User | None) -> None:
+async def cb_hist_purchases(
+    callback: CallbackQuery, session: AsyncSession, db_user: User | None = None
+) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
@@ -497,7 +503,9 @@ async def cb_hist_purchases(callback: CallbackQuery, session: AsyncSession, db_u
 
 
 @router.callback_query(F.data == "hist_payments")
-async def cb_hist_payments(callback: CallbackQuery, session: AsyncSession, db_user: User | None) -> None:
+async def cb_hist_payments(
+    callback: CallbackQuery, session: AsyncSession, db_user: User | None = None
+) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
@@ -523,7 +531,13 @@ async def cb_hist_payments(callback: CallbackQuery, session: AsyncSession, db_us
 
 
 @router.callback_query(F.data == "support")
-async def cb_support(callback: CallbackQuery, state: FSMContext, session: AsyncSession, db_user: User | None, settings: Settings) -> None:
+async def cb_support(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
@@ -558,7 +572,7 @@ async def support_text(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
-    db_user: User | None,
+    db_user: User | None = None,
 ) -> None:
     from app.db.models import SupportTicket
 

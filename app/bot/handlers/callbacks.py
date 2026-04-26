@@ -23,8 +23,8 @@ router = Router(name="callbacks")
 async def cb_approve_payment(
     callback: CallbackQuery,
     session: AsyncSession,
-    admin: Admin | None,
     after_commit: list,
+    admin: Admin | None = None,
 ) -> None:
     if admin is None or admin.role not in (AdminRole.OWNER, AdminRole.MANAGER):
         await callback.answer(T.UNAUTHORIZED, show_alert=True)
@@ -72,8 +72,8 @@ async def cb_approve_payment(
 async def cb_reject_payment_start(
     callback: CallbackQuery,
     session: AsyncSession,
-    admin: Admin | None,
     state: FSMContext,
+    admin: Admin | None = None,
 ) -> None:
     if admin is None or admin.role not in (AdminRole.OWNER, AdminRole.MANAGER):
         await callback.answer(T.UNAUTHORIZED, show_alert=True)
