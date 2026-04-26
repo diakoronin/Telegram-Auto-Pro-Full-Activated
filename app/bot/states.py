@@ -11,9 +11,14 @@ class SupportStates(StatesGroup):
     waiting_message = State()
 
 
+class PurchaseStates(StatesGroup):
+    waiting_custom_name = State()
+
+
 class AdminStates(StatesGroup):
     add_server_name = State()
     add_plan_name = State()
+    add_plan_display_name = State()
     add_plan_price = State()
     import_links_paste = State()
     add_card_number = State()

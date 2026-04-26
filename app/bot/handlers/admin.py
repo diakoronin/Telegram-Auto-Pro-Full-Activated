@@ -55,6 +55,7 @@ from app.validation import (
     validate_card_number,
     validate_customer_info,
     validate_plan_name,
+    validate_plan_display_name,
     validate_plan_price,
     validate_reason,
     validate_server_name,
@@ -752,7 +753,7 @@ async def cb_pick_srv(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(plan_server_id=sid)
     await state.set_state(AdminStates.add_plan_name)
     await callback.message.answer(
-        "نام پلن را وارد کنید:",
+        "نام داخلی پلن را وارد کنید (برای مدیریت و ایمپورت):",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="لغو", callback_data="admin_cancel_fsm")]
@@ -770,6 +771,21 @@ async def msg_plan_name(message: Message, state: FSMContext) -> None:
         await message.answer(e.message_fa)
         return
     await state.update_data(plan_name=name)
+    await state.set_state(AdminStates.add_plan_display_name)
+    await message.answer(
+        "نام نمایشی برای کاربر (کوتاه، مثلاً «یک گیگ»):\n"
+        "برای استفاده از همان نام داخلی، خط تیره «-» بفرستید."
+    )
+
+
+@router.message(AdminStates.add_plan_display_name, F.text)
+async def msg_plan_display_name(message: Message, state: FSMContext) -> None:
+    try:
+        disp = validate_plan_display_name(message.text or "")
+    except ValidationError as e:
+        await message.answer(e.message_fa)
+        return
+    await state.update_data(plan_display_name=disp)
     await state.set_state(AdminStates.add_plan_price)
     await message.answer("قیمت پلن را به تومان وارد کنید (عدد مثبت):")
 
@@ -784,13 +800,20 @@ async def msg_plan_price(
     data = await state.get_data()
     sid = int(data.get("plan_server_id") or 0)
     name = str(data.get("plan_name") or "")
+    disp = data.get("plan_display_name")
     try:
         price = validate_plan_price(message.text or "")
         pname = validate_plan_name(name)
     except ValidationError as e:
         await message.answer(e.message_fa)
         return
-    p = Plan(server_id=sid, name=pname, price=price, is_active=True)
+    p = Plan(
+        server_id=sid,
+        name=pname,
+        display_name=disp,
+        price=price,
+        is_active=True,
+    )
     session.add(p)
     await session.flush()
     await write_audit(

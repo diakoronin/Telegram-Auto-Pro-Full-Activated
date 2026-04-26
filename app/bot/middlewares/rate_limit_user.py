@@ -51,6 +51,7 @@ class UserRateLimitMiddleware(BaseMiddleware):
                 "charge",
                 "support",
                 "show_cards",
+                "hist_purchases",
             ):
                 ok = await consume_rate(
                     session,

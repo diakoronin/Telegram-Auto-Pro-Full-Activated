@@ -48,7 +48,11 @@ class SellerUserFlowBlockMiddleware(BaseMiddleware):
                 or d == "support"
                 or d == "show_cards"
                 or d == "cancel_fsm"
-                or d.startswith("buy:")
+                or d.startswith("shop_plans:")
+                or d.startswith("shop_plan:")
+                or d == "shop_name_skip"
+                or d.startswith("shop_confirm:")
+                or d.startswith("pur:")
             )
             if blocked:
                 await cq.answer(T.UNAUTHORIZED, show_alert=True)

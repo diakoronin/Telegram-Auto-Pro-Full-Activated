@@ -127,6 +127,7 @@ class Plan(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     server_id: Mapped[int] = mapped_column(ForeignKey("servers.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     price: Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     low_stock_rearm: Mapped[bool] = mapped_column(
@@ -240,8 +241,10 @@ class Purchase(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    server_id: Mapped[int] = mapped_column(ForeignKey("servers.id"), nullable=False)
     plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id"), nullable=False)
     link_id: Mapped[int] = mapped_column(ForeignKey("links.id"), nullable=False)
+    custom_service_name: Mapped[str] = mapped_column(String(120), nullable=False)
     amount_paid: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[PurchaseStatus] = mapped_column(
         Enum(PurchaseStatus), nullable=False, default=PurchaseStatus.COMPLETED

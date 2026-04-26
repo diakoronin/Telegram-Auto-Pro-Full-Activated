@@ -112,6 +112,46 @@ async def migrate_schema(database_url: str) -> None:
                     "TIMESTAMPTZ"
                 )
             )
+            await conn.execute(
+                text(
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS display_name VARCHAR(120)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS server_id "
+                    "INTEGER REFERENCES servers(id)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS custom_service_name "
+                    "VARCHAR(120)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "UPDATE purchases p SET server_id = pl.server_id "
+                    "FROM plans pl WHERE pl.id = p.plan_id AND p.server_id IS NULL"
+                )
+            )
+            await conn.execute(
+                text(
+                    "UPDATE purchases p SET custom_service_name = COALESCE(NULLIF(TRIM(pl.display_name), ''), pl.name) "
+                    "FROM plans pl WHERE pl.id = p.plan_id AND (p.custom_service_name IS NULL OR p.custom_service_name = '')"
+                )
+            )
+            try:
+                await conn.execute(
+                    text("ALTER TABLE purchases ALTER COLUMN server_id SET NOT NULL")
+                )
+                await conn.execute(
+                    text(
+                        "ALTER TABLE purchases ALTER COLUMN custom_service_name SET NOT NULL"
+                    )
+                )
+            except Exception:
+                pass
         if dialect == "sqlite":
             r3 = await conn.execute(text("PRAGMA table_info(users)"))
             ucols3 = {row[1] for row in r3.fetchall()}
@@ -148,6 +188,36 @@ async def migrate_schema(database_url: str) -> None:
                 await conn.execute(
                     text("ALTER TABLE payment_requests ADD COLUMN expires_at DATETIME")
                 )
+            r_pl = await conn.execute(text("PRAGMA table_info(plans)"))
+            plcols = {row[1] for row in r_pl.fetchall()}
+            if "display_name" not in plcols:
+                await conn.execute(
+                    text("ALTER TABLE plans ADD COLUMN display_name VARCHAR(120)")
+                )
+            r_pur2 = await conn.execute(text("PRAGMA table_info(purchases)"))
+            purcols = {row[1] for row in r_pur2.fetchall()}
+            if "server_id" not in purcols:
+                await conn.execute(
+                    text("ALTER TABLE purchases ADD COLUMN server_id INTEGER REFERENCES servers(id)")
+                )
+            if "custom_service_name" not in purcols:
+                await conn.execute(
+                    text("ALTER TABLE purchases ADD COLUMN custom_service_name VARCHAR(120)")
+                )
+            await conn.execute(
+                text(
+                    "UPDATE purchases SET server_id = "
+                    "(SELECT server_id FROM plans WHERE plans.id = purchases.plan_id) "
+                    "WHERE server_id IS NULL"
+                )
+            )
+            await conn.execute(
+                text(
+                    "UPDATE purchases SET custom_service_name = "
+                    "(SELECT COALESCE(NULLIF(TRIM(display_name), ''), name) FROM plans WHERE plans.id = purchases.plan_id) "
+                    "WHERE custom_service_name IS NULL OR custom_service_name = ''"
+                )
+            )
 
 
 async def session_scope(

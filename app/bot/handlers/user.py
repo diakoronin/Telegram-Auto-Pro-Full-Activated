@@ -13,12 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import texts_fa as T
 from app.config import Settings
-from app.db.models import Admin, PaymentCard, PaymentRequest, Plan, Purchase, Server, User
-from app.bot.states import ChargeStates, SupportStates
-from app.message_format import format_message, format_money_toman
+from app.db.models import Admin, Link, PaymentCard, PaymentRequest, Plan, Purchase, Server, User
+from app.bot.states import ChargeStates, PurchaseStates, SupportStates
+from app.message_format import format_message, format_money_toman, format_purchase_datetime
 from app.services.audit import write_audit
 from app.services.cards import card_display_number, pick_public_card_for_invoice
 from app.services.links import purchase_plan_for_user
+from app.services.plan_display import plan_display_label
 from app.services.payments import (
     attach_receipt_to_payment_request,
     cancel_payment_request_by_user,
@@ -29,7 +30,12 @@ from app.services.payments import (
 from app.services.rate_limit import consume_rate
 from app.services.stock import count_unused_for_plan
 from app.services.stock_alerts import run_stock_check_after_commit
-from app.validation import ValidationError, validate_charge_amount, is_allowed_receipt_content_type
+from app.validation import (
+    ValidationError,
+    validate_charge_amount,
+    validate_custom_service_name,
+    is_allowed_receipt_content_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +44,10 @@ router = Router(name="user")
 
 def _fmt(settings: Settings, text: str) -> str:
     return format_message(settings, text)
+
+
+def _default_service_name(plan: Plan, server: Server) -> str:
+    return f"{plan_display_label(plan)} - {server.name}"
 
 
 def _main_kb(*, card_view_allowed: bool = False) -> InlineKeyboardMarkup:
@@ -283,6 +293,7 @@ async def cb_charge(
     if await pick_public_card_for_invoice(session) is None:
         await callback.answer(T.NO_PUBLIC_CARD, show_alert=True)
         return
+    await state.clear()
     await state.set_state(ChargeStates.waiting_amount)
     await _edit_fmt(
         callback.message,
@@ -309,6 +320,7 @@ async def cb_cancel_fsm(
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
     await state.clear()
+    await state.set_state(None)
     await _edit_fmt(
         callback.message,
         settings,
@@ -596,7 +608,8 @@ async def _finalize_receipt(
     caption = _fmt(
         settings,
         f"🧾 درخواست شارژ #{pr.id}\n\n"
-        f"🆔 آیدی: {db_user.telegram_id}\n"
+        f"👤 کاربر: {message.from_user.full_name if message.from_user else '—'}\n"
+        f"🆔 آیدی عددی: {db_user.telegram_id}\n"
         f"🔗 یوزرنیم: {uname}\n"
         f"💵 مبلغ: {format_money_toman(amount)} تومان",
     )
@@ -621,15 +634,22 @@ async def _finalize_receipt(
 
 @router.callback_query(F.data == "shop")
 async def cb_shop(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
-    rows = (
+    srvs = (
         await session.execute(
-            select(Server, Plan)
-            .join(Plan, Plan.server_id == Server.id)
-            .where(Server.is_active.is_(True), Plan.is_active.is_(True))
-            .order_by(Server.id, Plan.id)
+            select(Server)
+            .where(Server.is_active.is_(True))
+            .order_by(Server.id)
         )
-    ).all()
-    if not rows:
+    ).scalars().all()
+    has_plan = (
+        await session.execute(
+            select(Plan.id)
+            .join(Server, Server.id == Plan.server_id)
+            .where(Server.is_active.is_(True), Plan.is_active.is_(True))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not srvs or has_plan is None:
         await _edit_fmt(
             callback.message,
             settings,
@@ -642,35 +662,232 @@ async def cb_shop(callback: CallbackQuery, session: AsyncSession, settings: Sett
         )
         await callback.answer()
         return
-    buttons = []
-    for srv, pl in rows:
-        n = await count_unused_for_plan(session, server_id=srv.id, plan_id=pl.id)
-        price_s = format_money_toman(int(pl.price))
-        if n <= 0:
-            label = f"📦 {pl.name} | {price_s} تومان | ناموجود ❌"
-        else:
-            label = f"📦 {pl.name} | {price_s} تومان | موجودی: {n} ✅"
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=label[:64],
-                    callback_data=f"buy:{pl.id}",
-                )
-            ]
-        )
+    buttons = [
+        [InlineKeyboardButton(text=f"🌐 {s.name}", callback_data=f"shop_srv:{s.id}")]
+        for s in srvs
+    ]
     buttons.append([InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")])
     await _edit_fmt(
         callback.message,
         settings,
-        T.SELECT_PLAN,
+        T.SHOP_PICK_SERVER,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("buy:"))
-async def cb_buy(
+@router.callback_query(F.data.startswith("shop_srv:"))
+async def cb_shop_server(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    sid = int(callback.data.split(":", 1)[1])
+    srv = await session.get(Server, sid)
+    if srv is None or not srv.is_active:
+        await callback.answer("سرور نامعتبر است.", show_alert=True)
+        return
+    plans = (
+        await session.execute(
+            select(Plan)
+            .where(Plan.server_id == sid, Plan.is_active.is_(True))
+            .order_by(Plan.id)
+        )
+    ).scalars().all()
+    if not plans:
+        await callback.answer(T.EMPTY_NO_PLANS_SERVER, show_alert=True)
+        return
+    buttons = []
+    for pl in plans:
+        n = await count_unused_for_plan(session, server_id=sid, plan_id=pl.id)
+        price_s = format_money_toman(int(pl.price))
+        label = plan_display_label(pl)
+        if n <= 0:
+            row_text = f"📦 {label} | {price_s} تومان | ناموجود ❌"
+        else:
+            row_text = f"📦 {label} | {price_s} تومان | موجودی: {n} ✅"
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=row_text[:64],
+                    callback_data=f"shop_plan:{sid}:{pl.id}",
+                )
+            ]
+        )
+    buttons.append(
+        [
+            InlineKeyboardButton(text=T.BTN_BACK, callback_data="shop"),
+        ]
+    )
+    await _edit_fmt(
+        callback.message,
+        settings,
+        T.SHOP_PICK_PLAN.format(server=srv.name),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("shop_plan:"))
+async def cb_shop_plan_pick(
     callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    _, sid_s, pid_s = callback.data.split(":", 2)
+    sid, pid = int(sid_s), int(pid_s)
+    srv = await session.get(Server, sid)
+    plan = await session.get(Plan, pid)
+    if (
+        srv is None
+        or plan is None
+        or not srv.is_active
+        or not plan.is_active
+        or plan.server_id != sid
+    ):
+        await callback.answer("پلن یا سرور نامعتبر است.", show_alert=True)
+        return
+    stock_n = await count_unused_for_plan(session, server_id=sid, plan_id=pid)
+    if stock_n <= 0:
+        await callback.message.answer(
+            _fmt(
+                settings,
+                T.STOCK_OUT_DETAIL.format(
+                    plan=plan_display_label(plan),
+                    server=srv.name,
+                ),
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text=T.BTN_BACK, callback_data=f"shop_srv:{sid}")],
+                ]
+            ),
+        )
+        await callback.answer()
+        return
+    await state.set_state(PurchaseStates.waiting_custom_name)
+    await state.update_data(shop_sid=sid, shop_pid=pid)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=T.SHOP_SKIP_NAME, callback_data="shop_name_skip")],
+            [InlineKeyboardButton(text=T.BTN_BACK, callback_data=f"shop_srv:{sid}")],
+        ]
+    )
+    await callback.message.answer(_fmt(settings, T.SHOP_ASK_CUSTOM_NAME), reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "shop_name_skip")
+async def cb_shop_name_skip(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    data = await state.get_data()
+    sid = int(data.get("shop_sid") or 0)
+    pid = int(data.get("shop_pid") or 0)
+    srv = await session.get(Server, sid)
+    plan = await session.get(Plan, pid)
+    if (
+        srv is None
+        or plan is None
+        or not srv.is_active
+        or not plan.is_active
+        or plan.server_id != sid
+    ):
+        await state.clear()
+        await callback.answer("اطلاعات نامعتبر است.", show_alert=True)
+        return
+    name = _default_service_name(plan, srv)
+    await state.update_data(shop_custom_name=name)
+    await state.set_state(None)
+    stock_n = await count_unused_for_plan(session, server_id=sid, plan_id=pid)
+    preview = T.SHOP_PURCHASE_PREVIEW.format(
+        service_name=name,
+        server=srv.name,
+        plan=plan_display_label(plan),
+        price=format_money_toman(int(plan.price)),
+        stock=stock_n,
+        wallet=format_money_toman(int(db_user.wallet_balance)),
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=T.BTN_CONFIRM_BUY, callback_data=f"shop_confirm:{sid}:{pid}")],
+            [InlineKeyboardButton(text=T.BTN_CHARGE_FROM_PREVIEW, callback_data="charge")],
+            [InlineKeyboardButton(text=T.BTN_BACK, callback_data=f"shop_srv:{sid}")],
+        ]
+    )
+    await callback.message.answer(_fmt(settings, preview), reply_markup=kb)
+    await callback.answer()
+
+
+@router.message(PurchaseStates.waiting_custom_name, F.text)
+async def msg_purchase_custom_name(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await state.clear()
+        return
+    try:
+        name = validate_custom_service_name(message.text or "")
+    except ValidationError as e:
+        await message.answer(_fmt(settings, e.message_fa))
+        return
+    data = await state.get_data()
+    sid = int(data.get("shop_sid") or 0)
+    pid = int(data.get("shop_pid") or 0)
+    srv = await session.get(Server, sid)
+    plan = await session.get(Plan, pid)
+    if (
+        srv is None
+        or plan is None
+        or not srv.is_active
+        or not plan.is_active
+        or plan.server_id != sid
+    ):
+        await state.clear()
+        await message.answer(_fmt(settings, T.GENERIC_ERROR))
+        return
+    await state.update_data(shop_custom_name=name)
+    await state.set_state(None)
+    stock_n = await count_unused_for_plan(session, server_id=sid, plan_id=pid)
+    preview = T.SHOP_PURCHASE_PREVIEW.format(
+        service_name=name,
+        server=srv.name,
+        plan=plan_display_label(plan),
+        price=format_money_toman(int(plan.price)),
+        stock=stock_n,
+        wallet=format_money_toman(int(db_user.wallet_balance)),
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=T.BTN_CONFIRM_BUY, callback_data=f"shop_confirm:{sid}:{pid}")],
+            [InlineKeyboardButton(text=T.BTN_CHARGE_FROM_PREVIEW, callback_data="charge")],
+            [InlineKeyboardButton(text=T.BTN_BACK, callback_data=f"shop_srv:{sid}")],
+        ]
+    )
+    await message.answer(_fmt(settings, preview), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("shop_confirm:"))
+async def cb_shop_confirm(
+    callback: CallbackQuery,
+    state: FSMContext,
     session: AsyncSession,
     settings: Settings,
     after_commit: list,
@@ -680,12 +897,28 @@ async def cb_buy(
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
-    plan_id = int(callback.data.split(":", 1)[1])
-    plan = await session.get(Plan, plan_id)
-    if plan is None or not plan.is_active:
-        await callback.answer("پلن نامعتبر است.", show_alert=True)
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
-    stock_n = await count_unused_for_plan(session, server_id=plan.server_id, plan_id=plan.id)
+    _, sid_s, pid_s = parts
+    sid, pid = int(sid_s), int(pid_s)
+    srv = await session.get(Server, sid)
+    plan = await session.get(Plan, pid)
+    if (
+        srv is None
+        or plan is None
+        or not srv.is_active
+        or not plan.is_active
+        or plan.server_id != sid
+    ):
+        await callback.answer("پلن یا سرور نامعتبر است.", show_alert=True)
+        return
+    data = await state.get_data()
+    custom = (data.get("shop_custom_name") or "").strip()
+    if not custom:
+        custom = _default_service_name(plan, srv)
+    stock_n = await count_unused_for_plan(session, server_id=sid, plan_id=pid)
     if stock_n <= 0:
         await callback.answer(T.STOCK_OUT_USER, show_alert=True)
         return
@@ -699,7 +932,7 @@ async def cb_buy(
         await callback.answer(T.RATE_LIMIT, show_alert=True)
         return
     ok, link_text, err, purchase_id = await purchase_plan_for_user(
-        session, user=db_user, plan=plan
+        session, user=db_user, plan=plan, custom_service_name=custom
     )
     if not ok:
         await write_audit(
@@ -708,8 +941,8 @@ async def cb_buy(
             actor_role="user",
             action="purchase_failed",
             target_type="plan",
-            target_id=str(plan_id),
-            metadata={"error": err},
+            target_id=str(pid),
+            metadata={"error": err, "server_id": sid},
         )
         if err and "لینک تمام" in (err or ""):
             await callback.answer(T.STOCK_OUT_USER, show_alert=True)
@@ -721,6 +954,7 @@ async def cb_buy(
         else:
             await callback.answer(err or T.GENERIC_ERROR, show_alert=True)
         return
+    await state.clear()
     await write_audit(
         session,
         actor_telegram_id=callback.from_user.id,
@@ -728,12 +962,12 @@ async def cb_buy(
         action="purchase_completed",
         target_type="purchase",
         target_id=str(purchase_id or ""),
+        metadata={"custom_service_name": custom, "server_id": sid},
     )
-    srv = await session.get(Server, plan.server_id)
-    srv_name = srv.name if srv else "—"
     body = T.PURCHASE_OK_UX.format(
-        plan=plan.name,
-        server=srv_name,
+        service_name=custom,
+        plan=plan_display_label(plan),
+        server=srv.name,
         price=format_money_toman(int(plan.price)),
         purchase_id=purchase_id or 0,
         link=link_text or "",
@@ -752,7 +986,7 @@ async def cb_buy(
 
     async def _stock() -> None:
         await run_stock_check_after_commit(
-            settings.database_url, settings, bot, plan_id=plan_id
+            settings.database_url, settings, bot, plan_id=pid
         )
 
     after_commit.append(_stock)
@@ -771,25 +1005,92 @@ async def cb_hist_purchases(
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
     q = await session.execute(
-        select(Purchase, Plan)
+        select(Purchase, Plan, Server)
         .join(Plan, Plan.id == Purchase.plan_id)
+        .join(Server, Server.id == Purchase.server_id)
         .where(Purchase.user_id == db_user.id)
         .order_by(Purchase.id.desc())
         .limit(15)
     )
-    lines = []
-    for pur, pl in q.all():
-        lines.append(
-            f"#{pur.id} plan={pl.name} paid={pur.amount_paid} refunded={pur.is_refunded}"
-        )
-    text = "\n".join(lines) if lines else T.EMPTY_NO_PURCHASES
+    rows = q.all()
+    if not rows:
+        text = T.EMPTY_NO_PURCHASES
+        kb_rows = [[InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]]
+    else:
+        blocks = [T.MY_SERVICES_TITLE + "\n"]
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        for i, (pur, pl, srv) in enumerate(rows, start=1):
+            dt_s = format_purchase_datetime(settings, pur.created_at)
+            plan_lbl = plan_display_label(pl)
+            blocks.append(
+                f"\n{i})\n"
+                f"📝 نام سرویس: {pur.custom_service_name}\n"
+                f"🌐 سرور: {srv.name}\n"
+                f"📦 پلن: {plan_lbl}\n"
+                f"💵 مبلغ: {format_money_toman(int(pur.amount_paid))} تومان\n"
+                f"🧾 شماره سفارش: #{pur.id}\n"
+                f"📅 تاریخ خرید: {dt_s}"
+            )
+            kb_rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=T.BTN_SERVICE_DETAIL,
+                        callback_data=f"pur:{pur.id}",
+                    )
+                ]
+            )
+        text = "\n".join(blocks)
+        kb_rows.append([InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")])
     await _edit_fmt(
         callback.message,
         settings,
         text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("pur:"))
+async def cb_purchase_detail(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    pid = int(callback.data.split(":", 1)[1])
+    r = await session.execute(
+        select(Purchase, Plan, Server, Link)
+        .join(Plan, Plan.id == Purchase.plan_id)
+        .join(Server, Server.id == Purchase.server_id)
+        .join(Link, Link.id == Purchase.link_id)
+        .where(Purchase.id == pid, Purchase.user_id == db_user.id)
+    )
+    row = r.one_or_none()
+    if row is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    pur, pl, srv, link = row
+    dt_s = format_purchase_datetime(settings, pur.created_at)
+    body = (
+        f"{T.MY_SERVICES_DETAIL_TITLE}\n\n"
+        f"📝 نام سرویس: {pur.custom_service_name}\n"
+        f"🌐 سرور: {srv.name}\n"
+        f"📦 پلن: {plan_display_label(pl)}\n"
+        f"🔗 لینک سرویس:\n{link.link_text}\n"
+        f"🧾 شماره سفارش: #{pur.id}\n"
+        f"📅 تاریخ خرید: {dt_s}"
+    )
+    await _edit_fmt(
+        callback.message,
+        settings,
+        body,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]
+                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="hist_purchases")]
             ]
         ),
     )

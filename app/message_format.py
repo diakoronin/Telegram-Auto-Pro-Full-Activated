@@ -40,3 +40,16 @@ def format_message(settings: Settings, text: str) -> str:
 def format_money_toman(amount: int) -> str:
     """e.g. 200,000 for display in Persian UI."""
     return f"{int(amount):,}"
+
+
+def format_purchase_datetime(settings: Settings, dt: datetime | None) -> str:
+    """Jalali date + local time for purchase rows."""
+    if dt is None:
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    local = dt.astimezone(ZoneInfo(settings.timezone))
+    jd = jdatetime.datetime.fromgregorian(datetime=local)
+    date_s = jd.strftime("%Y/%m/%d")
+    time_s = local.strftime("%H:%M")
+    return f"{date_s} - {time_s}"

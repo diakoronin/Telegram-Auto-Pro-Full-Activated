@@ -36,6 +36,7 @@ async def purchase_plan_for_user(
     *,
     user: User,
     plan: Plan,
+    custom_service_name: str,
 ) -> tuple[bool, str | None, str | None, int | None]:
     """
     Atomic purchase: deduct wallet, mark link used, purchase + wallet_tx + delivery.
@@ -74,8 +75,10 @@ async def purchase_plan_for_user(
 
     purchase = Purchase(
         user_id=locked_user.id,
+        server_id=plan.server_id,
         plan_id=plan.id,
         link_id=link.id,
+        custom_service_name=custom_service_name.strip()[:120],
         amount_paid=price,
         status=PurchaseStatus.COMPLETED,
     )

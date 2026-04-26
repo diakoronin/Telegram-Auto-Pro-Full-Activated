@@ -7,6 +7,8 @@ from app import texts_fa as T
 
 MAX_SERVER_NAME = 120
 MAX_PLAN_NAME = 120
+MAX_PLAN_DISPLAY_NAME = 50
+MAX_CUSTOM_SERVICE_NAME = 50
 MAX_LINK_TEXT = 4096
 MAX_CUSTOMER_INFO = 500
 MAX_CARD_HOLDER = 120
@@ -29,6 +31,27 @@ def validate_plan_name(name: str) -> str:
     s = name.strip()
     if not s or len(s) > MAX_PLAN_NAME:
         raise ValidationError(T.VALIDATION_PLAN_NAME)
+    return s
+
+
+def validate_custom_service_name(name: str) -> str:
+    s = name.strip()
+    if not s:
+        raise ValidationError("نام سرویس نمی‌تواند خالی باشد.")
+    if len(s) > MAX_CUSTOM_SERVICE_NAME:
+        raise ValidationError("نام سرویس حداکثر ۵۰ نویسه باشد.")
+    return s
+
+
+def validate_plan_display_name(raw: str) -> str | None:
+    """Optional short label for customers; '-' or empty means use internal name."""
+    s = (raw or "").strip()
+    if not s or s == "-":
+        return None
+    if len(s) > MAX_PLAN_DISPLAY_NAME:
+        raise ValidationError(
+            "نام نمایشی پلن باید حداکثر ۵۰ نویسه باشد یا «-» برای پیش‌فرض."
+        )
     return s
 
 

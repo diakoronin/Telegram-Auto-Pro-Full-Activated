@@ -12,8 +12,9 @@ Run against a staging bot and database. Use a normal user account and separate a
 - [ ] **Charge**: with payment enabled and a public active card, entering a valid amount creates an **invoice** with full card number, holder, bank, amount, invoice id, and expiry note.
 - [ ] **Charge**: “Send receipt” then uploading a clear photo attaches receipt; user sees submitted message; admins receive photo with approve/reject.
 - [ ] **Charge**: “Cancel invoice” rejects the draft and returns to menu.
-- [ ] **Shop**: each plan line shows stock count; zero-stock plan cannot be bought (alert).
-- [ ] Successful purchase shows server, plan, price, order id, and link; wallet decreases; stock decreases.
+- [ ] **Shop**: server list first, then plans for that server only; plan buttons show short `display_name`, price, stock (no server in button).
+- [ ] After choosing a plan with stock, bot asks for custom service name (or skip for default); preview then confirm.
+- [ ] Successful purchase saves `custom_service_name`; success message shows it; **سرویس‌های من** lists it; detail shows link.
 - [ ] **Orders** and **Payments** show history or empty-state messages.
 
 ## Admin
