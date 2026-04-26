@@ -56,13 +56,13 @@ async def cmd_start(
     message: Message,
     session: AsyncSession,
     settings: Settings,
-    _command: CommandObject,
+    command: CommandObject,
     db_user: User | None = None,
     admin: Admin | None = None,
     **kwargs: Any,
 ) -> None:
     """Always send a visible reply for /start (never silent return)."""
-    _ = _command  # deep-link payload reserved for future use
+    _ = command  # deep-link args in command.args when needed
     sent = False
     try:
         fu = message.from_user
