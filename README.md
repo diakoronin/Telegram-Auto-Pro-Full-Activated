@@ -42,6 +42,14 @@ Install log: **`/tmp/sakabot-install.log`**
 
 ---
 
+## Telegram admin panel
+
+In a private chat with the bot, send **`/admin`** from the account whose numeric Telegram ID equals **`OWNER_ID`** in `.env` (that user is added as **owner** in `admins` on first bot start).
+
+If the bot says you have no access, **`OWNER_ID`** does not match your account — fix it in `.env`, run **`sudo systemctl restart sakabot`**, send **`/start`**, then **`/admin`** again.
+
+---
+
 ## Manager CLI
 
 ```bash

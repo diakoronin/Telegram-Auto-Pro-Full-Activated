@@ -240,14 +240,23 @@ async def support_menu(message: Message):
     # state could be set here for rate limiting in production
 
 
-@router.message(F.text == "🛠 پنل مدیریت")
-async def admin_gate(message: Message, session):
+async def _open_admin_panel(message: Message, session) -> None:
     a = await get_admin(session, message.from_user.id)
     if not a:
         await message.answer(format_message("دسترسی ندارید."))
         return
     from bot_app.bot.keyboards import admin_panel_kb
-    from bot_app.config import get_settings
 
     s = get_settings()
     await message.answer(format_message("پنل مدیریت"), reply_markup=admin_panel_kb(s.manual_mode_enabled))
+
+
+@router.message(Command("admin"))
+async def admin_command(message: Message, session):
+    """Open admin panel (same as button). Owner is auto-added to admins on first bot start."""
+    await _open_admin_panel(message, session)
+
+
+@router.message(F.text == "🛠 پنل مدیریت")
+async def admin_gate(message: Message, session):
+    await _open_admin_panel(message, session)
