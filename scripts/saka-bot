@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-UNIT="${SYSTEMD_UNIT:-telegram-sales-bot.service}"
+UNIT="${SYSTEMD_UNIT:-${SAKA_BOT_UNIT:-telegram-sales-bot.service}}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { echo "[saka-bot] $*"; }
@@ -55,34 +55,119 @@ cd "$ROOT"
 
 usage() {
   cat <<'EOF'
-Usage: saka-bot <command>
+Usage: saka-bot <command>   (set SAKA_BOT_ROOT if not symlinked from repo)
 
-  install       Run full server install (sudo + curl install.sh). Set REPO_URL, BRANCH, INSTALL_DIR env.
-  update        git pull + pip + safe restart (scripts/update.sh)
-  reinstall     Same as update (alias)
+  install       Print first-time install examples (curl / install.sh)
+  update        Safe code update: stop bot, git pull, pip, restart systemd if was on
+  reinstall     Rebuild .venv + pip install (no git); then restart if systemd was on
   restart       systemctl restart
   start         systemctl start
   stop          systemctl stop
   status        systemctl status
-  logs          journalctl -n 80 (add -f for follow: saka-bot logs -f)
+  logs          journalctl last 80 lines (saka-bot logs -f to follow)
+  logs-save     Write last 500 log lines to ROOT/logs/journal-snippet.txt (for bug reports)
   diagnose      scripts/diagnose.sh
-  db-password   Change Postgres role password from DATABASE_URL in .env (needs sudo)
-  set-token     Prompt (hidden) and set BOT_TOKEN in .env
-  set-owner     Prompt and set OWNER_ID in .env
-  env-show      Print .env keys (values masked) — no secrets
+  db-info       Show DB user, host, port, database from DATABASE_URL (password never shown)
+  db-password   sudo: ALTER ROLE password + rewrite DATABASE_URL in .env
+  set-token     Hidden prompt -> BOT_TOKEN in .env
+  set-owner     Prompt -> OWNER_ID in .env (Telegram numeric admin id)
+  env-show      .env keys; BOT_TOKEN / DATABASE_URL / OWNER_ID masked
   help          This text
 
+Env: SAKA_BOT_ROOT, SAKA_BOT_UNIT (systemd unit name), SYSTEMD_UNIT (alias)
+
 Examples:
+  sudo ln -sf /root/telegram-sales-bot/scripts/saka-bot /usr/local/bin/saka-bot
   export SAKA_BOT_ROOT=/root/telegram-sales-bot
   saka-bot update
-  saka-bot logs -f
-  sudo ln -sf /root/telegram-sales-bot/scripts/saka-bot /usr/local/bin/saka-bot
+  saka-bot db-info
+  sudo saka-bot db-password
+  saka-bot logs-save && cat /root/telegram-sales-bot/logs/journal-snippet.txt
 EOF
 }
 
 cmd_update() {
   [[ -f scripts/update.sh ]] || die "scripts/update.sh missing. git pull first."
   exec bash scripts/update.sh
+}
+
+pick_python() {
+  for c in python3.12 python3.11 python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null; then
+      echo "$c"
+      return 0
+    fi
+  done
+  die "Need Python 3.11+ for reinstall"
+}
+
+cmd_reinstall() {
+  local had=0
+  if run_sctl is-active --quiet "$UNIT" 2>/dev/null; then
+    had=1
+    log "Stopping $UNIT"
+    run_sctl stop "$UNIT" || true
+    sleep 1
+  fi
+  pkill -f "${ROOT}/main.py" 2>/dev/null || true
+  sleep 1
+  local py
+  py="$(pick_python)"
+  log "Removing .venv and recreating with $py"
+  rm -rf .venv
+  "$py" -m venv .venv
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  pip install -q -U pip wheel setuptools
+  pip install -q -r requirements.txt
+  log "venv rebuilt OK"
+  if [[ "$had" -eq 1 ]]; then
+    run_sctl start "$UNIT" || die "systemctl start failed"
+    log "Started $UNIT"
+  else
+    log "systemd was off; run: saka-bot start   or: scripts/run.sh"
+  fi
+}
+
+cmd_db_info() {
+  [[ -f .env ]] || die ".env missing"
+  python3 <<'PY' || die "db-info failed"
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+def load_env(path):
+    d = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        d[k.strip()] = v.strip()
+    return d
+
+url = load_env(Path(".env")).get("DATABASE_URL", "")
+if not url.startswith("postgresql"):
+    print("DATABASE_URL is not postgres URL", file=sys.stderr)
+    sys.exit(1)
+u = urlparse(url.replace("postgresql+asyncpg", "postgresql", 1))
+user = unquote(u.username or "")
+pw = u.password
+db = (u.path or "/").lstrip("/")
+print("Current DATABASE_URL (parsed, password not shown):")
+print("  user:", user or "(none)")
+print("  password:", "(set)" if pw else "(empty)")
+print("  host:", u.hostname or "127.0.0.1")
+print("  port:", u.port or 5432)
+print("  database:", db or "(none)")
+PY
+}
+
+cmd_logs_save() {
+  mkdir -p "$ROOT/logs"
+  local out="$ROOT/logs/journal-snippet.txt"
+  run_journal -u "$UNIT" -n 500 --no-pager > "$out"
+  log "Wrote $out (attach this file when reporting bugs)"
 }
 
 cmd_db_password() {
@@ -232,7 +317,8 @@ main() {
   shift || true
   case "$cmd" in
     install) cmd_install ;;
-    update|reinstall) cmd_update ;;
+    update) cmd_update ;;
+    reinstall) cmd_reinstall ;;
     restart) run_sctl restart "$UNIT" ;;
     start) run_sctl start "$UNIT" ;;
     stop) run_sctl stop "$UNIT" ;;
@@ -244,10 +330,12 @@ main() {
         run_journal -u "$UNIT" -n 80 --no-pager
       fi
       ;;
+    logs-save) cmd_logs_save ;;
     diagnose)
       [[ -f scripts/diagnose.sh ]] || die "scripts/diagnose.sh missing"
       bash scripts/diagnose.sh "$ROOT"
       ;;
+    db-info) cmd_db_info ;;
     db-password) cmd_db_password ;;
     set-token) cmd_set_token ;;
     set-owner) cmd_set_owner ;;

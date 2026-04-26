@@ -43,3 +43,4 @@ venv/
 *.log
 tmp/
 temp_backups/
+logs/

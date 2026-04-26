@@ -17,13 +17,16 @@ Commands (all ASCII):
 
 | Command | Description |
 |---------|-------------|
-| `saka-bot update` | Same as `scripts/update.sh` — safe git pull + pip + restart systemd |
-| `saka-bot restart` / `start` / `stop` / `status` | systemd (`SAKA_BOT_UNIT` overrides service name) |
+| `saka-bot update` | Same as `scripts/update.sh` — stop bot, `git pull`, `pip`, restart systemd if it was on |
+| `saka-bot reinstall` | Delete `.venv`, recreate, `pip install -r requirements.txt`; restart if unit was active |
+| `saka-bot restart` / `start` / `stop` / `status` | systemd (`SAKA_BOT_UNIT` or `SYSTEMD_UNIT` for service name) |
 | `saka-bot logs` | Last 80 log lines; `saka-bot logs -f` follow |
+| `saka-bot logs-save` | Writes last 500 lines to `logs/journal-snippet.txt` (for bug reports; folder gitignored) |
 | `saka-bot diagnose` | Health check (no secrets printed) |
-| `sudo saka-bot db-password` | New Postgres password for role in `DATABASE_URL`; rewrites `.env` |
-| `saka-bot set-token` | Hidden prompt → updates `BOT_TOKEN` in `.env` |
-| `saka-bot set-owner` | Prompt → updates `OWNER_ID` in `.env` |
+| `saka-bot db-info` | Prints DB **user**, host, port, database from `DATABASE_URL` (password never shown) |
+| `sudo saka-bot db-password` | New Postgres password for that role + rewrite `DATABASE_URL` in `.env` |
+| `saka-bot set-token` | Hidden prompt → `BOT_TOKEN` in `.env` |
+| `saka-bot set-owner` | Prompt → `OWNER_ID` in `.env` (Telegram numeric id) |
 | `saka-bot env-show` | Lists keys; masks token and DB URL |
 | `saka-bot install` | Prints first-time install examples |
 
