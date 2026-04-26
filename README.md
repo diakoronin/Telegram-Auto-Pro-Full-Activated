@@ -6,23 +6,39 @@
 
 ## نصب با یک دستور (پیشنهادی)
 
-روی **Ubuntu 22.04 یا 24.04** با کاربر root یا sudo:
+روی **Ubuntu 22.04 یا 24.04** با کاربر root یا sudo.
+
+**پیشنهادی (با `sudo` خطای `/dev/fd/63` نمی‌گیرید):** اسکریپت را از stdin به bash بدهید:
 
 ```bash
-sudo bash <(curl -Ls https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo bash -s --
 ```
 
-شاخهٔ دیگر (مثال توسعه):
+نصب با آرگومان (مثلاً فقط به‌روزرسانی):
 
 ```bash
-sudo INSTALL_BRANCH=cursor/telegram-vpn-sales-bot-c6f2 bash <(curl -Ls https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo bash -s -- --update
+```
+
+شاخهٔ دیگر برای `git pull` داخل نصب (متغیر محیطی):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo env INSTALL_BRANCH=cursor/telegram-vpn-sales-bot-c6f2 bash -s --
 ```
 
 مسیر نصب سفارشی:
 
 ```bash
-sudo INSTALL_DIR=/opt/mybot bash <(curl -Ls https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo env INSTALL_DIR=/opt/mybot bash -s --
 ```
+
+**جایگزین** اگر به‌صورت root وارد shell شده‌اید (`sudo -i`):
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh)
+```
+
+**چرا `sudo bash <(curl …)` گاهی خطا می‌دهد؟** فرایند substitution روی کاربر فعلی اجرا می‌شود؛ فایل‌دیسکriptور در subshell ساخته می‌شود و child process `sudo` ممکن است `/dev/fd/N` را نبیند (`No such file or directory`). با `curl … | sudo bash -s --` این مشکل نیست.
 
 نصب‌کننده به‌صورت خودکار انجام می‌دهد: بسته‌های سیستم، Python 3.11، PostgreSQL، کاربر/دیتابیس `sakabot`، پرسش تعاملی (`BOT_TOKEN`, `OWNER_ID`, `PUBLIC_BASE_URL`, …)، ساخت `.env`، venv در `/opt/sakabot/.venv`، `pip install`، migration، سرویس systemd **`sakabot`**، شروع ربات، و دستور **`sakabot`** در `/usr/local/bin`.
 
@@ -35,7 +51,7 @@ sudo INSTALL_DIR=/opt/mybot bash <(curl -Ls https://raw.githubusercontent.com/di
 ## به‌روزرسانی یک‌خطی
 
 ```bash
-sudo bash <(curl -Ls https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh) --update
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo bash -s -- --update
 ```
 
 یا از منوی مدیریت: `sudo sakabot` → گزینهٔ **۲**.
