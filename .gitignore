@@ -30,3 +30,16 @@
 *.exe
 *.out
 *.app
+
+# Environment and local data
+.env
+*.db
+*.sqlite3
+__pycache__/
+*.py[cod]
+.Python
+venv/
+.venv/
+*.log
+tmp/
+temp_backups/

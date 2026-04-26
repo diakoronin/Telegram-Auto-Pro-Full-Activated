@@ -1,82 +1,45 @@
-# ![Locations](https://github.com/M4nifest0/M4nifest0_WhatsApp/blob/master/s.png) 
+# Telegram sales bot (security-first)
 
-# Telegram-Auto-Pro-Full-Activated
+Python 3.11+ bot built with **aiogram 3** and **SQLAlchemy 2 (async)**. Wallet charges go through **pending payment requests** with **row-locked approve/reject**; purchases reserve a link with **`SELECT … FOR UPDATE`** (PostgreSQL: **`SKIP LOCKED`**) and update wallet in the **same transaction**.
 
-##### Program Features
-----------------------
-📌 activated
+## Quick start
 
-📌 No proxy required
+1. Copy `.env.example` to `.env` and fill variables (never commit `.env`).
+2. Use an async database URL, for example:
+   - PostgreSQL (recommended): `postgresql+asyncpg://user:pass@host:5432/dbname`
+   - Local SQLite: `sqlite+aiosqlite:///./data.db`
+3. Install and run:
 
-📌 Relatively good speed
+```bash
+pip install -r requirements.txt
+python3 main.py
+```
 
-📌 Requires a virtual server
+The first run creates tables. The Telegram user matching `OWNER_ID` becomes an **owner** admin automatically.
 
-📌 Slowly adds a member to the group and is a little slow
+## Security notes
 
-📌 The full version is hassle-free and fully active
+- **Roles** are enforced from the database on every sensitive path; Telegram callback data carries only short IDs (e.g. payment request id, confirmation id).
+- **Blocked users** cannot use shop, wallet charge, receipts, support, or receive deliveries (admins are exempt from the block middleware so they can work).
+- **Payment approval** uses `FOR UPDATE` on the payment row and refuses non-`pending` states; user notification runs **after** successful commit.
+- **Wallet** changes always append a `wallet_transactions` row with `balance_before` / `balance_after`; balance is constrained non-negative at the DB layer.
+- **Secrets** load only from environment; the bot token is never logged by application code.
 
-📌 This application is completely free
+See [SECURITY.md](SECURITY.md) for the full threat model and deployment checklist.
 
-# Disclaimer:
-----------------------
-- 📌 This tool is designed and developed for professionals and researchers. So do not target others and do not test them for no reason :)
+## Roles (summary)
 
-# See how it works:
-----------------------
-- 🔞 https://youtu.be/StG17vQf64E
+| Role    | Capabilities (high level) |
+|---------|---------------------------|
+| owner   | Full control: admins, cards, dangerous confirmations, full backup, refunds, link return |
+| manager | Approve/reject payments, reports, user block, plans/servers (deactivate), link import, wallet adjust |
+| seller  | Manual link delivery only |
+| user    | Buy with wallet, charge flow, own history, support |
 
-# PassWord File:
-----------------------
-- 🔞 hack4lx.py
+## Environment variables
 
-# Link Download File:
-----------------------
-- 🔞 https://m4nifest0.com/product/telegram-auto-pro-full-activated/
+Required and optional keys are documented in `.env.example`.
 
-- 🔞 https://m4nifest0.shop/product/telegram-auto-pro-full-activated/
+## License
 
-- 🔞 https://m4nifest0.group/product/telegram-auto-pro-full-activated/
-
-# How to ger:
-----------------------
-- 📌 Visit our channel or our site to download .
-
-- 🔞 https://m4nifest0.com
-- 🔞 https://m4nifest0.group
-- 🔞 https://m4nifest0.shop
-- 🔞 https://t.me/M4nifest0
-
-----------------------
-
-<h2>- 📌 Get the tool via the links below</h2>
-<p align="center">	
-</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://t.me/M4nifest0">
-		<img src="https://img.shields.io/badge/Telegram-%23000000.svg?&style=for-the-badge&logo=Telegram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.instagram.com/_m4nifest0_/">
-		<img src="https://img.shields.io/badge/instagram-%23E4405F.svg?&style=for-the-badge&logo=instagram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.youtube.com/c/cybermonitoringhack4lx">
-		<img src="https://img.shields.io/badge/youtube-%23FF0000.svg?&style=for-the-badge&logo=youtube&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://twitter.com/_M4nifest0_">
-		<img src="https://img.shields.io/badge/twitter-%231DA1F2.svg?&style=for-the-badge&logo=twitter&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://m4nifest0.com">
-		<img src="https://img.shields.io/badge/WebSite-%234A154B.svg?&style=for-the-badge&logo=slack&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-</p>
-
-<h2>📌 Our team specializes in the following programming languages:...</h2> 
-<p align="center">	
-	<img src="https://img.shields.io/badge/node.js%20-%2343853D.svg?&style=for-the-badge&logo=node.js&logoColor=white" />
-        <img src="https://img.shields.io/badge/python%20-%2314354C.svg?&style=for-the-badge&logo=python&logoColor=white" />
-	<img src="https://img.shields.io/badge/c%23%20-%23239120.svg?&style=for-the-badge&logo=c-sharp&logoColor=white" />
-	<img src="https://img.shields.io/badge/java-%23ED8B00.svg?&style=for-the-badge&logo=java&logoColor=white" />
-	<img src="https://img.shields.io/badge/php-%23777BB4.svg?&style=for-the-badge&logo=php&logoColor=white" />
-	<img src="https://img.shields.io/badge/ruby-%23CC342D.svg?&style=for-the-badge&logo=ruby&logoColor=white" />
-	<img src="https://img.shields.io/badge/perl-%2339457E.svg?&style=for-the-badge&logo=perl&logoColor=white" />
-	<img src="https://img.shields.io/badge/c++%20-%2300599C.svg?&style=for-the-badge&logo=c%2B%2B&logoColor=white" />
-</p>
+See `LICENSE` in the repository.
