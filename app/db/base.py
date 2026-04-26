@@ -60,10 +60,25 @@ async def migrate_schema(database_url: str) -> None:
                         "BOOLEAN NOT NULL DEFAULT 0"
                     )
                 )
+            r2 = await conn.execute(text("PRAGMA table_info(users)"))
+            ucols = {row[1] for row in r2.fetchall()}
+            if "card_view_allowed" not in ucols:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE users ADD COLUMN card_view_allowed "
+                        "BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
         elif dialect == "postgresql":
             await conn.execute(
                 text(
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS low_stock_rearm "
+                    "BOOLEAN NOT NULL DEFAULT false"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS card_view_allowed "
                     "BOOLEAN NOT NULL DEFAULT false"
                 )
             )

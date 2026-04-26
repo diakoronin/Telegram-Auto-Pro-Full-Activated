@@ -33,3 +33,6 @@ class AdminStates(StatesGroup):
     unblock_user_tid = State()
     edit_card_holder = State()
     edit_card_bank = State()
+    card_access_forward_wait = State()
+    card_access_tid_wait = State()
+    card_access_revoke_tid = State()

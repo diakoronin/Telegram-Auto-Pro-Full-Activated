@@ -37,7 +37,14 @@ class UserRateLimitMiddleware(BaseMiddleware):
         elif isinstance(event, CallbackQuery):
             tid = event.from_user.id if event.from_user else None
             data_cb = event.data or ""
-            if tid and data_cb in ("main_menu", "shop", "wallet", "charge", "support"):
+            if tid and data_cb in (
+                "main_menu",
+                "shop",
+                "wallet",
+                "charge",
+                "support",
+                "show_cards",
+            ):
                 ok = await consume_rate(
                     session,
                     key=f"cb:{tid}",

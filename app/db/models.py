@@ -78,6 +78,9 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    card_view_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     wallet_balance: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

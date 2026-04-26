@@ -40,6 +40,7 @@ class SellerUserFlowBlockMiddleware(BaseMiddleware):
                 or d == "hist_purchases"
                 or d == "hist_payments"
                 or d == "support"
+                or d == "show_cards"
                 or d == "cancel_fsm"
                 or d.startswith("buy:")
             )

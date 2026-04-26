@@ -79,6 +79,10 @@ def _admin_root_kb(admin: Admin) -> InlineKeyboardMarkup:
     ]
     if admin.role in (AdminRole.OWNER, AdminRole.MANAGER):
         rows.insert(1, [InlineKeyboardButton(text="تنظیم کیف پول", callback_data="adm:wallet")])
+        rows.insert(
+            2,
+            [InlineKeyboardButton(text="دسترسی کارت برای کاربر", callback_data="adm:card_access_menu")],
+        )
     if admin.role == AdminRole.OWNER:
         rows.append([InlineKeyboardButton(text="مدیریت ادمین‌ها", callback_data="adm:admins")])
         rows.append([InlineKeyboardButton(text="بازپرداخت خرید", callback_data="adm:refund")])
@@ -1467,6 +1471,72 @@ async def cb_confirm_admin_actions(
             target_id=str(u.id) if u else str(tid),
         )
         await callback.answer("رفع مسدودیت انجام شد.")
+        return
+
+    if action == "grant_card_view":
+        if admin.role not in (AdminRole.OWNER, AdminRole.MANAGER):
+            await callback.answer(T.UNAUTHORIZED, show_alert=True)
+            return
+        uid = int(payload["user_db_id"])
+        u = await session.get(User, uid)
+        if u is None:
+            await callback.answer("کاربر یافت نشد.", show_alert=True)
+            return
+        if u.is_blocked:
+            await callback.answer("کاربر مسدود است.", show_alert=True)
+            return
+        u.card_view_allowed = True
+        await write_audit(
+            session,
+            actor_telegram_id=callback.from_user.id,
+            actor_role=admin.role.value,
+            action="card_view_granted",
+            target_type="user",
+            target_id=str(u.id),
+            metadata={"via": payload.get("via")},
+        )
+        bot = callback.bot
+        user_tid = u.telegram_id
+
+        async def _notify_grant() -> None:
+            try:
+                await bot.send_message(user_tid, T.CARD_ACCESS_GRANTED_USER)
+            except Exception:
+                logger.exception("notify grant card view failed")
+
+        after_commit.append(_notify_grant)
+        await callback.answer("دسترسی کارت فعال شد.")
+        return
+
+    if action == "revoke_card_view":
+        if admin.role not in (AdminRole.OWNER, AdminRole.MANAGER):
+            await callback.answer(T.UNAUTHORIZED, show_alert=True)
+            return
+        uid = int(payload["user_db_id"])
+        u = await session.get(User, uid)
+        if u is None:
+            await callback.answer("کاربر یافت نشد.", show_alert=True)
+            return
+        u.card_view_allowed = False
+        await write_audit(
+            session,
+            actor_telegram_id=callback.from_user.id,
+            actor_role=admin.role.value,
+            action="card_view_revoked",
+            target_type="user",
+            target_id=str(u.id),
+        )
+        bot = callback.bot
+        user_tid = u.telegram_id
+
+        async def _notify_revoke() -> None:
+            try:
+                await bot.send_message(user_tid, T.CARD_ACCESS_REVOKED_USER)
+            except Exception:
+                logger.exception("notify revoke card view failed")
+
+        after_commit.append(_notify_revoke)
+        await callback.answer("دسترسی کارت قطع شد.")
         return
 
     if action == "deactivate_payment_card":

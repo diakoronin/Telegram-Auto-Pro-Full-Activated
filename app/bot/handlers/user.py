@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import texts_fa as T
 from app.config import Settings
-from app.db.models import Admin, PaymentRequest, Plan, Purchase, Server, User
+from app.db.models import Admin, PaymentCard, PaymentRequest, Plan, Purchase, Server, User
 from app.bot.states import ChargeStates, SupportStates
 from app.services.audit import write_audit
 from app.services.links import purchase_plan_for_user
@@ -30,23 +30,24 @@ logger = logging.getLogger(__name__)
 router = Router(name="user")
 
 
-def _main_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=T.BTN_SHOP, callback_data="shop")],
-            [
-                InlineKeyboardButton(text=T.BTN_WALLET, callback_data="wallet"),
-                InlineKeyboardButton(text=T.BTN_CHARGE, callback_data="charge"),
-            ],
-            [
-                InlineKeyboardButton(text=T.BTN_HISTORY, callback_data="hist_purchases"),
-                InlineKeyboardButton(
-                    text=T.BTN_PAYMENT_HISTORY, callback_data="hist_payments"
-                ),
-            ],
-            [InlineKeyboardButton(text=T.BTN_SUPPORT, callback_data="support")],
-        ]
-    )
+def _main_kb(*, card_view_allowed: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text=T.BTN_SHOP, callback_data="shop")],
+        [
+            InlineKeyboardButton(text=T.BTN_WALLET, callback_data="wallet"),
+            InlineKeyboardButton(text=T.BTN_CHARGE, callback_data="charge"),
+        ],
+        [
+            InlineKeyboardButton(text=T.BTN_HISTORY, callback_data="hist_purchases"),
+            InlineKeyboardButton(
+                text=T.BTN_PAYMENT_HISTORY, callback_data="hist_payments"
+            ),
+        ],
+    ]
+    if card_view_allowed:
+        rows.append([InlineKeyboardButton(text=T.BTN_CARDS, callback_data="show_cards")])
+    rows.append([InlineKeyboardButton(text=T.BTN_SUPPORT, callback_data="support")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(CommandStart())
@@ -68,17 +69,49 @@ async def cmd_start(
     text = T.START_WELCOME + "\n" + T.MENU_USER
     if admin:
         text += "\n\nبرای پنل مدیریت از /admin استفاده کنید."
-    await message.answer(text, reply_markup=_main_kb())
+    await message.answer(text, reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed))
 
 
 @router.message(Command("menu"))
-async def cmd_menu(message: Message) -> None:
-    await message.answer(T.MENU_USER, reply_markup=_main_kb())
+async def cmd_menu(message: Message, db_user: User) -> None:
+    await message.answer(
+        T.MENU_USER,
+        reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
+    )
 
 
 @router.callback_query(F.data == "main_menu")
-async def cb_main_menu(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(T.MENU_USER, reply_markup=_main_kb())
+async def cb_main_menu(callback: CallbackQuery, db_user: User) -> None:
+    await callback.message.edit_text(
+        T.MENU_USER,
+        reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "show_cards")
+async def cb_show_cards(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
+    if not db_user.card_view_allowed:
+        await callback.answer(T.CARDS_NOT_ALLOWED, show_alert=True)
+        return
+    cards = (
+        await session.execute(select(PaymentCard).where(PaymentCard.is_active.is_(True)))
+    ).scalars().all()
+    if not cards:
+        text = T.CARDS_NONE_ACTIVE
+    else:
+        lines = [T.CARDS_HEADER, ""]
+        for c in cards:
+            lines.append(f"{c.card_number_masked} — {c.card_holder} — {c.bank_name}")
+        text = "\n".join(lines)
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="بازگشت", callback_data="main_menu")]
+            ]
+        ),
+    )
     await callback.answer()
 
 
@@ -113,9 +146,12 @@ async def cb_charge(callback: CallbackQuery, state: FSMContext, db_user: User) -
 
 
 @router.callback_query(F.data == "cancel_fsm")
-async def cb_cancel_fsm(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_cancel_fsm(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
     await state.clear()
-    await callback.message.edit_text(T.MENU_USER, reply_markup=_main_kb())
+    await callback.message.edit_text(
+        T.MENU_USER,
+        reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
+    )
     await callback.answer()
 
 
@@ -241,7 +277,22 @@ async def _finalize_receipt(
         metadata={"amount": amount},
     )
     await state.clear()
-    await message.answer(T.CHARGE_SUBMITTED)
+    lines = [T.CHARGE_SUBMITTED]
+    if db_user.card_view_allowed:
+        cards = (
+            await session.execute(
+                select(PaymentCard).where(PaymentCard.is_active.is_(True))
+            )
+        ).scalars().all()
+        if cards:
+            lines.append("")
+            lines.append(T.CARDS_HEADER)
+            for c in cards:
+                lines.append(f"{c.card_number_masked} — {c.card_holder} — {c.bank_name}")
+        else:
+            lines.append("")
+            lines.append(T.CARDS_NONE_ACTIVE)
+    await message.answer("\n".join(lines))
 
     from app.db.models import AdminRole
 
@@ -483,4 +534,7 @@ async def support_text(
         metadata={"len": len(body)},
     )
     await state.clear()
-    await message.answer(T.SUPPORT_SENT, reply_markup=_main_kb())
+    await message.answer(
+        T.SUPPORT_SENT,
+        reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
+    )

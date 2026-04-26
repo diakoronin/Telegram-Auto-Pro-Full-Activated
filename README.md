@@ -25,6 +25,7 @@ The first run creates tables and applies lightweight **additive migrations** (fo
 - **Wallet** changes always append a `wallet_transactions` row with `balance_before` / `balance_after`; balance is constrained non-negative at the DB layer.
 - **Secrets** load only from environment; the bot token is never logged by application code.
 - **Low stock**: when unused links for an active plan drop to `LOW_STOCK_THRESHOLD` or below (after a delivery, import, or delete-unused), **owner and manager** receive one Telegram alert per cycle; restocking above the threshold **re-arms** the next alert.
+- **Payment card visibility**: active card numbers are **not** shown to every user. A user must have `card_view_allowed` set by **owner or manager** (via **Admin → دسترسی کارت برای کاربر**): either **forward a message from that user** to the bot (sender must be visible) or enter their **numeric Telegram ID**, then confirm. Until then, the «شماره کارت‌ها» button is hidden and the charge flow does not append card lines. Access can be **revoked** the same way.
 
 See [SECURITY.md](SECURITY.md) for the full threat model and deployment checklist.
 
