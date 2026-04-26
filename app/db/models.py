@@ -81,6 +81,9 @@ class User(Base):
     card_view_allowed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    card_payment_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
     wallet_balance: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -97,9 +100,11 @@ class PaymentCard(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     card_number_masked: Mapped[str] = mapped_column(String(32), nullable=False)
+    card_number_full: Mapped[str | None] = mapped_column(String(32), nullable=True)
     card_holder: Mapped[str] = mapped_column(String(120), nullable=False)
     bank_name: Mapped[str] = mapped_column(String(120), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -169,8 +174,14 @@ class PaymentRequest(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    receipt_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    receipt_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    receipt_file_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    receipt_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    assigned_card_id: Mapped[int | None] = mapped_column(
+        ForeignKey("payment_cards.id"), nullable=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[PaymentRequestStatus] = mapped_column(
         Enum(PaymentRequestStatus), nullable=False, default=PaymentRequestStatus.PENDING
     )
@@ -187,6 +198,7 @@ class PaymentRequest(Base):
 
     user: Mapped[User] = relationship()
     reviewer: Mapped[Admin | None] = relationship()
+    assigned_card: Mapped[PaymentCard | None] = relationship()
 
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_payment_requests_amount_positive"),

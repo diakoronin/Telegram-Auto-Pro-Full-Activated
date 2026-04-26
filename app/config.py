@@ -22,16 +22,27 @@ def _int(name: str, default: int) -> int:
     return int(raw)
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
     owner_telegram_id: int
     database_url: str
+    brand_name: str
     low_stock_threshold: int
     min_charge_amount: int
     max_charge_amount: int
     max_import_links: int
     support_username: str
+    payment_expire_minutes: int
+    footer_enabled: bool
+    timezone: str
     large_wallet_adjustment_amount: int
     rate_limit_window_seconds: int
     rate_limit_start_max: int
@@ -46,6 +57,10 @@ def load_settings() -> Settings:
     database_url = _req("DATABASE_URL")
     owner_id = int(_req("OWNER_ID"))
     support_username = _req("SUPPORT_USERNAME").lstrip("@")
+    brand_name = os.getenv("BRAND_NAME", "ساکانت").strip() or "ساکانت"
+    pay_expire = max(5, min(7 * 24 * 60, _int("PAYMENT_EXPIRE_MINUTES", 30)))
+    footer_enabled = _bool("FOOTER_ENABLED", True)
+    timezone = os.getenv("TIMEZONE", "Asia/Tehran").strip() or "Asia/Tehran"
 
     min_charge = _int("MIN_CHARGE_AMOUNT", 10_000)
     max_charge = _int("MAX_CHARGE_AMOUNT", 50_000_000)
@@ -60,11 +75,15 @@ def load_settings() -> Settings:
         bot_token=bot_token,
         owner_telegram_id=owner_id,
         database_url=database_url,
+        brand_name=brand_name,
         low_stock_threshold=max(0, _int("LOW_STOCK_THRESHOLD", 5)),
         min_charge_amount=min_charge,
         max_charge_amount=max_charge,
         max_import_links=max_import,
         support_username=support_username,
+        payment_expire_minutes=pay_expire,
+        footer_enabled=footer_enabled,
+        timezone=timezone,
         large_wallet_adjustment_amount=max(
             1, _int("LARGE_WALLET_ADJUSTMENT_AMOUNT", 10_000_000)
         ),

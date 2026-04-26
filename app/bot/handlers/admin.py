@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -19,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import texts_fa as T
+from app.message_format import format_message, format_money_toman
 from app.bot.filters import IsAdmin, IsManagerOrOwner, IsOwner
 from app.bot.states import AdminStates
 from app.config import Settings
@@ -37,11 +39,13 @@ from app.services.audit import write_audit
 from app.services.backup import export_full_backup_bytes, write_temp_backup_file
 from app.services.confirmations import create_confirmation, take_confirmation_if_valid
 from app.services.delete_unused import delete_unused_links
-from app.services.import_links import bulk_import_links
+from app.services.import_links import bulk_import_links_detailed
 from app.services.links import admin_manual_deliver, return_link
 from app.services.rate_limit import consume_rate
-from app.services.payments import reject_payment_request
+from app.services.payments import list_pending_for_review, reject_payment_request
+from app.services.stock import get_all_servers_stock_summary, get_server_stock_summary
 from app.services.users import get_admin_by_telegram
+from app.services.cards import card_display_number
 from app.services.stock_alerts import run_stock_check_after_commit
 from app.services.wallet import manual_adjust_wallet, refund_purchase
 from app.validation import (
@@ -66,36 +70,230 @@ router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 
+def _afmt(settings: Settings, text: str) -> str:
+    return format_message(settings, text)
+
+
 def _admin_root_kb(admin: Admin) -> InlineKeyboardMarkup:
     if admin.role == AdminRole.SELLER:
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="تحویل دستی لینک", callback_data="adm:manual")],
+                [InlineKeyboardButton(text="🛒 تحویل دستی لینک", callback_data="adm:manual")],
             ]
         )
     rows = [
-        [InlineKeyboardButton(text="سرورها و پلن‌ها", callback_data="adm:plans")],
-        [InlineKeyboardButton(text="تحویل دستی لینک", callback_data="adm:manual")],
-        [InlineKeyboardButton(text="ایمپورت لینک", callback_data="adm:import_menu")],
-        [InlineKeyboardButton(text="کارت‌ها", callback_data="adm:cards")],
-        [InlineKeyboardButton(text="کاربران", callback_data="adm:users")],
-        [InlineKeyboardButton(text="گزارش / پشتیبان", callback_data="adm:backup_menu")],
+        [InlineKeyboardButton(text=T.ADM_CAT_SALES, callback_data="adm:cat_sales")],
+        [InlineKeyboardButton(text=T.ADM_CAT_USERS, callback_data="adm:cat_users")],
     ]
     if admin.role in (AdminRole.OWNER, AdminRole.MANAGER):
-        rows.insert(1, [InlineKeyboardButton(text="تنظیم کیف پول", callback_data="adm:wallet")])
-        rows.insert(
-            2,
-            [InlineKeyboardButton(text="دسترسی کارت برای کاربر", callback_data="adm:card_access_menu")],
+        rows.append(
+            [InlineKeyboardButton(text=T.ADM_CAT_MGMT, callback_data="adm:cat_mgmt")]
         )
-    if admin.role == AdminRole.OWNER:
-        rows.append([InlineKeyboardButton(text="مدیریت ادمین‌ها", callback_data="adm:admins")])
-        rows.append([InlineKeyboardButton(text="بازپرداخت خرید", callback_data="adm:refund")])
-        rows.append([InlineKeyboardButton(text="حذف ادمین", callback_data="adm:remove_admin")])
+    rows.append([InlineKeyboardButton(text=T.ADM_HOME_MAIN, callback_data="adm:goto_user_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _kb_cat_sales() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=T.ADM_SRV_PLANS, callback_data="adm:plans")],
+            [InlineKeyboardButton(text=T.ADM_LINK_MGMT, callback_data="adm:link_menu")],
+            [InlineKeyboardButton(text=T.ADM_MANUAL, callback_data="adm:manual")],
+            [InlineKeyboardButton(text=T.ADM_STOCK_ALL, callback_data="adm:stock_all")],
+            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="admin_home")],
+        ]
+    )
+
+
+def _kb_cat_users(admin: Admin) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=T.ADM_USERS, callback_data="adm:users")],
+        [InlineKeyboardButton(text=T.ADM_PAY_REQS, callback_data="adm:pay_reqs")],
+    ]
+    if admin.role == AdminRole.OWNER:
+        rows.insert(1, [InlineKeyboardButton(text=T.ADM_CARDS, callback_data="adm:cards")])
+    elif admin.role == AdminRole.MANAGER:
+        rows.insert(1, [InlineKeyboardButton(text=T.ADM_CARDS, callback_data="adm:cards_mgr")])
+    if admin.role in (AdminRole.OWNER, AdminRole.MANAGER):
+        rows.append([InlineKeyboardButton(text=T.ADM_WALLET, callback_data="adm:wallet")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=T.ADM_CARD_USER_ACCESS, callback_data="adm:card_access_menu"
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text=T.ADM_BACK, callback_data="admin_home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _kb_cat_mgmt(admin: Admin) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=T.ADM_REPORTS, callback_data="adm:backup_menu")],
+    ]
+    if admin.role == AdminRole.OWNER:
+        rows.append([InlineKeyboardButton(text=T.ADM_ADMINS, callback_data="adm:admins")])
+        rows.append([InlineKeyboardButton(text="💸 بازپرداخت خرید", callback_data="adm:refund")])
+        rows.append([InlineKeyboardButton(text="🗑 حذف ادمین", callback_data="adm:remove_admin")])
+    rows.append(
+        [InlineKeyboardButton(text=T.ADM_SETTINGS, callback_data="adm:settings_stub")]
+    )
+    rows.append([InlineKeyboardButton(text=T.ADM_BACK, callback_data="admin_home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _kb_link_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📥 ایمپورت لینک", callback_data="adm:import_menu")],
+            [
+                InlineKeyboardButton(
+                    text="🗑 حذف لینک‌های بلااستفاده", callback_data="adm:del_unused_menu"
+                )
+            ],
+            [InlineKeyboardButton(text="↩️ بازگرداندن لینک", callback_data="adm:ret_link_start")],
+            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_sales")],
+        ]
+    )
+
+
+@router.callback_query(F.data == "adm:goto_user_menu")
+async def cb_goto_user_menu(
+    callback: CallbackQuery, admin: Admin, db_user: User | None = None, **kwargs: Any
+) -> None:
+    from app import texts_fa as Tfa
+
+    allow = bool(db_user and db_user.card_view_allowed)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=Tfa.BTN_SHOP, callback_data="shop")],
+            [
+                InlineKeyboardButton(text=Tfa.BTN_WALLET, callback_data="wallet"),
+                InlineKeyboardButton(text=Tfa.BTN_CHARGE, callback_data="charge"),
+            ],
+            [
+                InlineKeyboardButton(text=Tfa.BTN_HISTORY, callback_data="hist_purchases"),
+                InlineKeyboardButton(text=Tfa.BTN_PAYMENT_HISTORY, callback_data="hist_payments"),
+            ],
+            *(
+                [[InlineKeyboardButton(text=Tfa.BTN_CARDS, callback_data="show_cards")]]
+                if allow
+                else []
+            ),
+            [InlineKeyboardButton(text=Tfa.BTN_SUPPORT, callback_data="support")],
+        ]
+    )
+    await callback.message.answer(
+        "منوی کاربران (برای بازگشت به پنل /admin بزنید):",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:cat_sales", IsManagerOrOwner())
+async def cb_cat_sales(callback: CallbackQuery, settings: Settings) -> None:
+    await callback.message.edit_text(
+        _afmt(settings, "📦 فروش و موجودی"),
+        reply_markup=_kb_cat_sales(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:link_menu", IsManagerOrOwner())
+async def cb_link_menu(callback: CallbackQuery, settings: Settings) -> None:
+    await callback.message.edit_text(
+        _afmt(settings, "🔗 مدیریت لینک‌ها"),
+        reply_markup=_kb_link_menu(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:cat_users", IsManagerOrOwner())
+async def cb_cat_users(callback: CallbackQuery, settings: Settings, admin: Admin) -> None:
+    await callback.message.edit_text(
+        _afmt(settings, "👥 کاربران و پرداخت"),
+        reply_markup=_kb_cat_users(admin),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:cat_mgmt", IsManagerOrOwner())
+async def cb_cat_mgmt(callback: CallbackQuery, settings: Settings, admin: Admin) -> None:
+    await callback.message.edit_text(
+        _afmt(settings, "📊 مدیریت"),
+        reply_markup=_kb_cat_mgmt(admin),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:settings_stub", IsManagerOrOwner())
+async def cb_settings_stub(callback: CallbackQuery, settings: Settings) -> None:
+    await callback.answer(
+        "تنظیمات اصلی ربات از فایل .env روی سرور انجام می‌شود.",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data == "adm:stock_all", IsManagerOrOwner())
+async def cb_stock_all(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+    summary = await get_all_servers_stock_summary(session)
+    if not summary:
+        text = T.EMPTY_NO_SERVERS
+    else:
+        blocks = [T.ADM_STOCK_ALL + "\n"]
+        for block in summary:
+            lines = [f"\n🌐 {block.server_name}"]
+            tot = 0
+            for p in block.plans:
+                tot += p.unused_count
+                st = "✅" if p.unused_count > 0 else "❌"
+                lines.append(f"▫️ {p.plan_name}: {p.unused_count} {st}")
+            lines.append(f"📌 مجموع: {tot}")
+            blocks.append("\n".join(lines))
+        text = "\n".join(blocks)
+    await callback.message.edit_text(
+        _afmt(settings, text),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_sales")]]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:pay_reqs", IsManagerOrOwner())
+async def cb_pay_reqs(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+    pending = await list_pending_for_review(session, limit=15)
+    if not pending:
+        body = "🧾 درخواست پرداخت در انتظار بررسی وجود ندارد."
+    else:
+        lines = ["🧾 درخواست‌های در انتظار:\n"]
+        for pr in pending:
+            u = await session.get(User, pr.user_id)
+            tid = u.telegram_id if u else 0
+            un = f"@{u.username}" if u and u.username else "—"
+            lines.append(
+                f"\n🧾 #{pr.id} | 💵 {format_money_toman(pr.amount)} تومان\n"
+                f"🆔 {tid} | {un}"
+            )
+        body = "\n".join(lines)
+    kb = [[InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_users")]]
+    await callback.message.edit_text(_afmt(settings, body), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:cards_mgr", IsManagerOrOwner())
+async def cb_cards_manager_info(callback: CallbackQuery, settings: Settings) -> None:
+    await callback.message.edit_text(
+        _afmt(settings, "مدیریت کارت‌ها فقط برای مالک در دسترس است."),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_users")]]
+        ),
+    )
+    await callback.answer()
+
+
 @router.message(Command("admin"))
-async def cmd_admin(message: Message, session: AsyncSession, admin: Admin) -> None:
+async def cmd_admin(message: Message, session: AsyncSession, admin: Admin, settings: Settings) -> None:
     await write_audit(
         session,
         actor_telegram_id=message.from_user.id if message.from_user else None,
@@ -104,40 +302,135 @@ async def cmd_admin(message: Message, session: AsyncSession, admin: Admin) -> No
         target_type="admin",
         target_id=str(admin.id),
     )
-    await message.answer(T.MENU_ADMIN, reply_markup=_admin_root_kb(admin))
+    intro = f"{T.ADMIN_PANEL_TITLE}\n\n{T.ADMIN_PANEL_INTRO}"
+    await message.answer(_afmt(settings, intro), reply_markup=_admin_root_kb(admin))
 
 
 @router.callback_query(F.data == "admin_home")
-async def cb_admin_home(callback: CallbackQuery, admin: Admin) -> None:
-    await callback.message.edit_text(T.MENU_ADMIN, reply_markup=_admin_root_kb(admin))
+async def cb_admin_home(callback: CallbackQuery, admin: Admin, settings: Settings) -> None:
+    intro = f"{T.ADMIN_PANEL_TITLE}\n\n{T.ADMIN_PANEL_INTRO}"
+    await callback.message.edit_text(
+        _afmt(settings, intro), reply_markup=_admin_root_kb(admin)
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_cancel_fsm")
-async def cb_admin_cancel_fsm(callback: CallbackQuery, state: FSMContext, admin: Admin) -> None:
+async def cb_admin_cancel_fsm(
+    callback: CallbackQuery, state: FSMContext, admin: Admin, settings: Settings
+) -> None:
     await state.clear()
-    await callback.message.answer(T.MENU_ADMIN, reply_markup=_admin_root_kb(admin))
+    intro = f"{T.ADMIN_PANEL_TITLE}\n\n{T.ADMIN_PANEL_INTRO}"
+    await callback.message.answer(_afmt(settings, intro), reply_markup=_admin_root_kb(admin))
     await callback.answer()
 
 
 @router.callback_query(F.data == "adm:plans", IsManagerOrOwner())
-async def cb_plans(callback: CallbackQuery, session: AsyncSession, admin: Admin) -> None:
+async def cb_plans(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
     rows = (await session.execute(select(Server).order_by(Server.id))).scalars().all()
-    lines = []
-    for s in rows:
-        st = "فعال" if s.is_active else "غیرفعال"
-        lines.append(f"#{s.id} {s.name} ({st})")
-    text = "سرورها:\n" + ("\n".join(lines) if lines else "خالی")
+    if not rows:
+        text = T.EMPTY_NO_SERVERS
+        kb: list[list[InlineKeyboardButton]] = []
+    else:
+        text = "🌐 سرور را انتخاب کنید:"
+        kb = [
+            [InlineKeyboardButton(text=f"🌐 {s.name}", callback_data=f"adm:srv:{s.id}")]
+            for s in rows
+        ]
+    kb.extend(
+        [
+            [InlineKeyboardButton(text="➕ افزودن سرور", callback_data="adm:add_srv")],
+            [InlineKeyboardButton(text="➕ افزودن پلن", callback_data="adm:add_plan_menu")],
+            [
+                InlineKeyboardButton(
+                    text="🚫 غیرفعال‌سازی پلن", callback_data="adm:deact_plan_menu"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚫 غیرفعال‌سازی سرور", callback_data="adm:deact_srv_menu"
+                )
+            ],
+            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_sales")],
+        ]
+    )
+    await callback.message.edit_text(
+        _afmt(settings, text), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:srv:"), IsManagerOrOwner())
+async def cb_server_detail(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    sid = int(callback.data.split(":")[-1])
+    srv = await session.get(Server, sid)
+    if srv is None:
+        await callback.answer("سرور یافت نشد.", show_alert=True)
+        return
+    st = "فعال ✅" if srv.is_active else "غیرفعال ❌"
+    plans = await get_server_stock_summary(session, server_id=sid, only_active_plans=False)
+    plan_lines = ["\n📊 موجودی پلن‌ها:"]
+    sum_unused = 0
+    for p in plans:
+        sum_unused += p.unused_count
+        if p.unused_count > 0:
+            plan_lines.append(
+                f"▫️ {p.plan_name}: {p.unused_count} عدد آماده فروش ✅"
+            )
+        else:
+            plan_lines.append(f"▫️ {p.plan_name}: 0 عدد ناموجود ❌")
+    body = (
+        f"📦 مدیریت سرور\n\n🌐 سرور: {srv.name}\nوضعیت: {st}\n"
+        + "\n".join(plan_lines)
+        + f"\n\n📌 مجموع موجودی این سرور: {sum_unused} عدد"
+    )
     kb = [
-        [InlineKeyboardButton(text="افزودن سرور", callback_data="adm:add_srv")],
-        [InlineKeyboardButton(text="افزودن پلن", callback_data="adm:add_plan_menu")],
-        [InlineKeyboardButton(text="غیرفعال‌سازی پلن", callback_data="adm:deact_plan_menu")],
-        [InlineKeyboardButton(text="غیرفعال‌سازی سرور", callback_data="adm:deact_srv_menu")],
-        [InlineKeyboardButton(text="حذف لینک‌های استفاده‌نشده", callback_data="adm:del_unused_menu")],
-        [InlineKeyboardButton(text="بازگرداندن لینک (مالک)", callback_data="adm:ret_link_start")],
-        [InlineKeyboardButton(text="بازگشت", callback_data="admin_home")],
+        [InlineKeyboardButton(text="➕ افزودن پلن", callback_data=f"adm:pick_srv:{sid}")],
+        [InlineKeyboardButton(text="📥 افزودن لینک", callback_data="adm:import_menu")],
+        [
+            InlineKeyboardButton(
+                text="📊 گزارش کامل موجودی", callback_data=f"adm:srv_stock_rpt:{sid}"
+            )
+        ],
+        [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:plans")],
     ]
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.message.edit_text(
+        _afmt(settings, body), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:srv_stock_rpt:"), IsManagerOrOwner())
+async def cb_server_stock_report(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    sid = int(callback.data.split(":")[-1])
+    srv = await session.get(Server, sid)
+    if srv is None:
+        await callback.answer("سرور یافت نشد.", show_alert=True)
+        return
+    plans = await get_server_stock_summary(session, server_id=sid, only_active_plans=False)
+    blocks = [f"📊 گزارش موجودی سرور {srv.name}\n"]
+    for p in plans:
+        price_s = format_money_toman(p.price)
+        blocks.append(
+            f"\n▫️ پلن {p.plan_name}\n"
+            f"💵 قیمت: {price_s} تومان\n"
+            f"✅ آماده فروش: {p.unused_count}\n"
+            f"📦 فروخته‌شده: {p.used_count}\n"
+            f"🗑 غیرفعال/برگشتی: {p.inactive_count}\n"
+            f"📌 کل: {p.total_count}"
+        )
+    await callback.message.edit_text(
+        _afmt(settings, "\n".join(blocks)),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=T.ADM_BACK, callback_data=f"adm:srv:{sid}")]
+            ]
+        ),
+    )
     await callback.answer()
 
 
@@ -301,7 +594,7 @@ async def cb_del_unused_confirm(
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:ret_link_start", IsOwner())
+@router.callback_query(F.data == "adm:ret_link_start", IsManagerOrOwner())
 async def cb_ret_link_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.return_link_id)
     await callback.message.answer(
@@ -679,12 +972,12 @@ async def _finalize_link_import(
         max_count=settings.rate_limit_admin_import_minute,
     )
     if not ok:
-        await message.answer(T.RATE_LIMIT)
+        await message.answer(_afmt(settings, T.RATE_LIMIT))
         return
     data = await state.get_data()
     sid = int(data["import_server_id"])
     pid = int(data["import_plan_id"])
-    added, dup_b, dup_db, err = await bulk_import_links(
+    added, dup_b, dup_db, invalid, total_in, err = await bulk_import_links_detailed(
         session,
         server_id=sid,
         plan_id=pid,
@@ -693,7 +986,7 @@ async def _finalize_link_import(
         max_link_len=4096,
     )
     if err:
-        await message.answer(err)
+        await message.answer(_afmt(settings, err))
         return
     await write_audit(
         session,
@@ -710,10 +1003,21 @@ async def _finalize_link_import(
         },
     )
     await state.clear()
-    await message.answer(
-        T.IMPORT_RESULT.format(added=added, dup_batch=dup_b, dup_db=dup_db),
-        reply_markup=_admin_root_kb(admin),
+    body = T.IMPORT_DONE_UX.format(
+        total=total_in,
+        added=added,
+        dup_file=dup_b,
+        dup_db=dup_db,
+        invalid=invalid,
     )
+    kb_imp = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=T.BTN_ADD_LINK_AGAIN, callback_data="adm:import_menu")],
+            [InlineKeyboardButton(text=T.BTN_VIEW_STOCK, callback_data="adm:stock_all")],
+            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_sales")],
+        ]
+    )
+    await message.answer(_afmt(settings, body), reply_markup=kb_imp)
     bot = message.bot
 
     async def _stock() -> None:
@@ -795,12 +1099,25 @@ async def msg_import_links_document(
 
 
 @router.callback_query(F.data == "adm:cards", IsOwner())
-async def cb_cards(callback: CallbackQuery, session: AsyncSession, admin: Admin) -> None:
+async def cb_cards(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
     cards = (await session.execute(select(PaymentCard).order_by(PaymentCard.id))).scalars().all()
-    lines = [f"#{c.id} {c.card_number_masked} {c.bank_name} active={c.is_active}" for c in cards]
-    text = "کارت‌ها:\n" + ("\n".join(lines) if lines else "خالی")
+    if not cards:
+        text = T.EMPTY_NO_CARDS
+    else:
+        blocks = ["💳 مدیریت کارت‌ها\n"]
+        for c in cards:
+            pub = "بله ✅" if c.is_public else "خیر ❌"
+            act = "فعال ✅" if c.is_active else "غیرفعال ❌"
+            blocks.append(
+                f"\n💳 {c.card_number_masked}\n"
+                f"🙎🏻‍♂️ {c.card_holder}\n"
+                f"🏦 {c.bank_name}\n"
+                f"وضعیت: {act}\n"
+                f"نمایش به کاربران: {pub}"
+            )
+        text = "\n".join(blocks)
     kb = [
-        [InlineKeyboardButton(text="افزودن کارت", callback_data="adm:add_card")],
+        [InlineKeyboardButton(text="➕ افزودن کارت", callback_data="adm:add_card")],
     ]
     for c in cards:
         if c.is_active:
@@ -812,26 +1129,15 @@ async def cb_cards(callback: CallbackQuery, session: AsyncSession, admin: Admin)
                     )
                 ]
             )
-    kb.append([InlineKeyboardButton(text="بازگشت", callback_data="admin_home")])
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    kb.append([InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_users")])
+    await callback.message.edit_text(
+        _afmt(settings, text), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("adm:card:"), IsOwner())
-async def cb_card_detail(callback: CallbackQuery, session: AsyncSession) -> None:
-    cid = int(callback.data.split(":")[-1])
-    c = await session.get(PaymentCard, cid)
-    if c is None:
-        await callback.answer("کارت یافت نشد.", show_alert=True)
-        return
-    text = (
-        f"کارت #{c.id}\n"
-        f"شماره: {c.card_number_masked}\n"
-        f"صاحب: {c.card_holder}\n"
-        f"بانک: {c.bank_name}\n"
-        f"وضعیت: {'فعال' if c.is_active else 'غیرفعال'}"
-    )
-    rows = []
+def _payment_card_detail_markup(c: PaymentCard) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
     if c.is_active:
         rows.append(
             [
@@ -845,9 +1151,58 @@ async def cb_card_detail(callback: CallbackQuery, session: AsyncSession) -> None
                 ),
             ]
         )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="👁 تغییر نمایش عمومی",
+                    callback_data=f"adm:card_toggle_pub:{c.id}",
+                )
+            ]
+        )
     rows.append([InlineKeyboardButton(text="بازگشت به لیست", callback_data="adm:cards")])
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _payment_card_detail_text(c: PaymentCard) -> str:
+    num = card_display_number(c)
+    return (
+        f"کارت #{c.id}\n"
+        f"شماره: {num}\n"
+        f"صاحب: {c.card_holder}\n"
+        f"بانک: {c.bank_name}\n"
+        f"وضعیت: {'فعال ✅' if c.is_active else 'غیرفعال ❌'}\n"
+        f"نمایش به کاربران: {'بله ✅' if c.is_public else 'خیر ❌'}"
+    )
+
+
+@router.callback_query(F.data.startswith("adm:card:"), IsOwner())
+async def cb_card_detail(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+    cid = int(callback.data.split(":")[-1])
+    c = await session.get(PaymentCard, cid)
+    if c is None:
+        await callback.answer("کارت یافت نشد.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        _afmt(settings, _payment_card_detail_text(c)),
+        reply_markup=_payment_card_detail_markup(c),
+    )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:card_toggle_pub:"), IsOwner())
+async def cb_card_toggle_pub(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+    cid = int(callback.data.split(":")[-1])
+    c = await session.get(PaymentCard, cid)
+    if c is None:
+        await callback.answer("کارت یافت نشد.", show_alert=True)
+        return
+    c.is_public = not c.is_public
+    await session.flush()
+    await callback.message.edit_text(
+        _afmt(settings, _payment_card_detail_text(c)),
+        reply_markup=_payment_card_detail_markup(c),
+    )
+    await callback.answer("ذخیره شد ✅")
 
 
 @router.callback_query(F.data.startswith("adm:card_deact_ask:"), IsOwner())
@@ -991,7 +1346,13 @@ async def msg_card_bank(
     data = await state.get_data()
     num: str = data["card_num"]
     masked = num[:4] + "****" + num[-4:]
-    c = PaymentCard(card_number_masked=masked, card_holder=data["card_holder"], bank_name=b)
+    c = PaymentCard(
+        card_number_masked=masked,
+        card_number_full=num,
+        card_holder=data["card_holder"],
+        bank_name=b,
+        is_public=True,
+    )
     session.add(c)
     await session.flush()
     await write_audit(
@@ -1576,6 +1937,7 @@ async def cb_confirm_admin_actions(
             await callback.answer("کاربر مسدود است.", show_alert=True)
             return
         u.card_view_allowed = True
+        u.card_payment_enabled = True
         await write_audit(
             session,
             actor_telegram_id=callback.from_user.id,
@@ -1608,6 +1970,7 @@ async def cb_confirm_admin_actions(
             await callback.answer("کاربر یافت نشد.", show_alert=True)
             return
         u.card_view_allowed = False
+        u.card_payment_enabled = False
         await write_audit(
             session,
             actor_telegram_id=callback.from_user.id,

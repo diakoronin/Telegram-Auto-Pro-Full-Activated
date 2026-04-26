@@ -3,6 +3,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class ChargeStates(StatesGroup):
     waiting_amount = State()
+    invoice_review = State()
     waiting_receipt = State()
 
 

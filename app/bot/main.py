@@ -18,6 +18,7 @@ from app.bot.middlewares.settings import SettingsMiddleware
 from app.config import load_settings
 from app.db.base import init_db
 from app import texts_fa as T
+from app.message_format import format_message
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +33,11 @@ async def main() -> None:
 
     # Plain text only: default HTML parse mode breaks many Persian messages as "invalid entities".
     bot = Bot(settings.bot_token, default=DefaultBotProperties())
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+    except Exception:
+        logger.debug("delete_webhook skipped")
+
     dp = Dispatcher()
 
     dp.update.outer_middleware(SettingsMiddleware(settings))
@@ -50,10 +56,12 @@ async def main() -> None:
         logger.exception("Unhandled exception: %s", exc)
         try:
             if event.update.message:
-                await event.update.message.answer(T.GENERIC_ERROR)
+                await event.update.message.answer(
+                    format_message(settings, T.GENERIC_ERROR)
+                )
             elif event.update.callback_query:
                 await event.update.callback_query.answer(
-                    T.GENERIC_ERROR, show_alert=True
+                    format_message(settings, T.GENERIC_ERROR), show_alert=True
                 )
         except Exception:
             logger.exception("Failed to send user-friendly error")

@@ -82,6 +82,72 @@ async def migrate_schema(database_url: str) -> None:
                     "BOOLEAN NOT NULL DEFAULT false"
                 )
             )
+            await conn.execute(
+                text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS card_payment_enabled "
+                    "BOOLEAN NOT NULL DEFAULT true"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE payment_cards ADD COLUMN IF NOT EXISTS card_number_full "
+                    "VARCHAR(32)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE payment_cards ADD COLUMN IF NOT EXISTS is_public "
+                    "BOOLEAN NOT NULL DEFAULT true"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE payment_requests ADD COLUMN IF NOT EXISTS assigned_card_id "
+                    "INTEGER REFERENCES payment_cards(id)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE payment_requests ADD COLUMN IF NOT EXISTS expires_at "
+                    "TIMESTAMPTZ"
+                )
+            )
+        if dialect == "sqlite":
+            r3 = await conn.execute(text("PRAGMA table_info(users)"))
+            ucols3 = {row[1] for row in r3.fetchall()}
+            if "card_payment_enabled" not in ucols3:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE users ADD COLUMN card_payment_enabled "
+                        "BOOLEAN NOT NULL DEFAULT 1"
+                    )
+                )
+            r4 = await conn.execute(text("PRAGMA table_info(payment_cards)"))
+            ccols = {row[1] for row in r4.fetchall()}
+            if "card_number_full" not in ccols:
+                await conn.execute(
+                    text("ALTER TABLE payment_cards ADD COLUMN card_number_full VARCHAR(32)")
+                )
+            if "is_public" not in ccols:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE payment_cards ADD COLUMN is_public "
+                        "BOOLEAN NOT NULL DEFAULT 1"
+                    )
+                )
+            r5 = await conn.execute(text("PRAGMA table_info(payment_requests)"))
+            prcols = {row[1] for row in r5.fetchall()}
+            if "assigned_card_id" not in prcols:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE payment_requests ADD COLUMN assigned_card_id "
+                        "INTEGER REFERENCES payment_cards(id)"
+                    )
+                )
+            if "expires_at" not in prcols:
+                await conn.execute(
+                    text("ALTER TABLE payment_requests ADD COLUMN expires_at DATETIME")
+                )
 
 
 async def session_scope(

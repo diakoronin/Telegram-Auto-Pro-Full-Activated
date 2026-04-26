@@ -15,20 +15,29 @@ from app import texts_fa as T
 from app.config import Settings
 from app.db.models import Admin, PaymentCard, PaymentRequest, Plan, Purchase, Server, User
 from app.bot.states import ChargeStates, SupportStates
+from app.message_format import format_message, format_money_toman
 from app.services.audit import write_audit
+from app.services.cards import card_display_number, pick_public_card_for_invoice
 from app.services.links import purchase_plan_for_user
 from app.services.payments import (
+    attach_receipt_to_payment_request,
+    cancel_payment_request_by_user,
     count_pending_for_user,
     count_receipts_last_hour,
-    create_payment_request,
+    create_draft_payment_request,
 )
 from app.services.rate_limit import consume_rate
+from app.services.stock import count_unused_for_plan
 from app.services.stock_alerts import run_stock_check_after_commit
 from app.validation import ValidationError, validate_charge_amount, is_allowed_receipt_content_type
 
 logger = logging.getLogger(__name__)
 
 router = Router(name="user")
+
+
+def _fmt(settings: Settings, text: str) -> str:
+    return format_message(settings, text)
 
 
 def _main_kb(*, card_view_allowed: bool = False) -> InlineKeyboardMarkup:
@@ -49,6 +58,18 @@ def _main_kb(*, card_view_allowed: bool = False) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text=T.BTN_CARDS, callback_data="show_cards")])
     rows.append([InlineKeyboardButton(text=T.BTN_SUPPORT, callback_data="support")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _answer_fmt(
+    message: Message, settings: Settings, text: str, **kwargs: Any
+) -> Any:
+    return await message.answer(_fmt(settings, text), **kwargs)
+
+
+async def _edit_fmt(
+    message: Message, settings: Settings, text: str, **kwargs: Any
+) -> Any:
+    return await message.edit_text(_fmt(settings, text), **kwargs)
 
 
 @router.message(CommandStart())
@@ -72,7 +93,7 @@ async def cmd_start(
                 message.chat.id,
                 message.chat.type,
             )
-            await message.answer(T.START_CONTEXT_ERROR)
+            await message.answer(_fmt(settings, T.START_CONTEXT_ERROR))
             sent = True
             return
 
@@ -81,7 +102,7 @@ async def cmd_start(
                 "cmd_start: db_user missing for telegram_id=%s — context middleware bug?",
                 fu.id,
             )
-            await message.answer(T.START_CONTEXT_ERROR)
+            await message.answer(_fmt(settings, T.START_CONTEXT_ERROR))
             sent = True
             return
 
@@ -102,10 +123,13 @@ async def cmd_start(
             target_type="user",
             target_id=str(db_user.id),
         )
-        text = T.START_WELCOME + "\n" + T.MENU_USER
+        text = T.START_USER.format(brand=settings.brand_name)
         if admin:
-            text += "\n\nبرای پنل مدیریت از /admin استفاده کنید."
-        await message.answer(text, reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed))
+            text += T.START_ADMIN_HINT
+        await message.answer(
+            _fmt(settings, text),
+            reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
+        )
         sent = True
         logger.info("cmd_start: reply sent telegram_id=%s", fu.id)
     except Exception:
@@ -121,31 +145,47 @@ async def cmd_start(
 
 
 @router.message(Command("ping"))
-async def cmd_ping(message: Message, **kwargs: Any) -> None:
-    await message.answer(T.PONG)
+async def cmd_ping(message: Message, settings: Settings, **kwargs: Any) -> None:
+    await message.answer(_fmt(settings, T.PING_OK))
+
+
+@router.message(Command("help"))
+async def cmd_help(
+    message: Message, settings: Settings, admin: Admin | None = None, **kwargs: Any
+) -> None:
+    text = T.HELP_ADMIN if admin is not None else T.HELP_USER
+    await message.answer(_fmt(settings, text))
 
 
 @router.message(Command("menu"))
 async def cmd_menu(
-    message: Message, db_user: User | None = None, **kwargs: Any
+    message: Message,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
 ) -> None:
     if message.from_user is None or db_user is None:
-        await message.answer(T.START_CONTEXT_ERROR)
+        await message.answer(_fmt(settings, T.START_CONTEXT_ERROR))
         return
     await message.answer(
-        T.MENU_USER,
+        _fmt(settings, T.MENU_USER),
         reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
     )
 
 
 @router.callback_query(F.data == "main_menu")
 async def cb_main_menu(
-    callback: CallbackQuery, db_user: User | None = None, **kwargs: Any
+    callback: CallbackQuery,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
 ) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
-    await callback.message.edit_text(
+    await _edit_fmt(
+        callback.message,
+        settings,
         T.MENU_USER,
         reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
     )
@@ -156,30 +196,42 @@ async def cb_main_menu(
 async def cb_show_cards(
     callback: CallbackQuery,
     session: AsyncSession,
+    settings: Settings,
     db_user: User | None = None,
     **kwargs: Any,
 ) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
+    if not db_user.card_payment_enabled:
+        await callback.answer(T.CHARGE_DISABLED, show_alert=True)
+        return
     if not db_user.card_view_allowed:
         await callback.answer(T.CARDS_NOT_ALLOWED, show_alert=True)
         return
     cards = (
-        await session.execute(select(PaymentCard).where(PaymentCard.is_active.is_(True)))
+        await session.execute(
+            select(PaymentCard).where(
+                PaymentCard.is_active.is_(True),
+                PaymentCard.is_public.is_(True),
+            )
+        )
     ).scalars().all()
     if not cards:
-        text = T.CARDS_NONE_ACTIVE
+        text = T.EMPTY_NO_CARDS
     else:
         lines = [T.CARDS_HEADER, ""]
         for c in cards:
-            lines.append(f"{c.card_number_masked} — {c.card_holder} — {c.bank_name}")
-        text = "\n".join(lines)
-    await callback.message.edit_text(
+            num = card_display_number(c)
+            lines.append(f"💳 {num}\n🙎🏻‍♂️ {c.card_holder}\n🏦 {c.bank_name}")
+        text = "\n\n".join(lines)
+    await _edit_fmt(
+        callback.message,
+        settings,
         text,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="بازگشت", callback_data="main_menu")]
+                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]
             ]
         ),
     )
@@ -188,16 +240,22 @@ async def cb_show_cards(
 
 @router.callback_query(F.data == "wallet")
 async def cb_wallet(
-    callback: CallbackQuery, db_user: User | None = None, **kwargs: Any
+    callback: CallbackQuery,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
 ) -> None:
     if db_user is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
-    await callback.message.edit_text(
-        T.WALLET_BALANCE.format(balance=db_user.wallet_balance),
+    bal = format_money_toman(int(db_user.wallet_balance))
+    await _edit_fmt(
+        callback.message,
+        settings,
+        T.WALLET_BALANCE.format(balance=bal),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="بازگشت", callback_data="main_menu")]
+                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]
             ]
         ),
     )
@@ -208,6 +266,8 @@ async def cb_wallet(
 async def cb_charge(
     callback: CallbackQuery,
     state: FSMContext,
+    settings: Settings,
+    session: AsyncSession,
     db_user: User | None = None,
     **kwargs: Any,
 ) -> None:
@@ -217,12 +277,20 @@ async def cb_charge(
     if db_user.is_blocked:
         await callback.answer(T.BLOCKED_USER, show_alert=True)
         return
+    if not db_user.card_payment_enabled:
+        await callback.answer(T.CHARGE_DISABLED, show_alert=True)
+        return
+    if await pick_public_card_for_invoice(session) is None:
+        await callback.answer(T.NO_PUBLIC_CARD, show_alert=True)
+        return
     await state.set_state(ChargeStates.waiting_amount)
-    await callback.message.edit_text(
-        T.AMOUNT_PROMPT,
+    await _edit_fmt(
+        callback.message,
+        settings,
+        T.CHARGE_ASK_AMOUNT,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="لغو", callback_data="cancel_fsm")]
+                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="cancel_fsm")]
             ]
         ),
     )
@@ -233,6 +301,7 @@ async def cb_charge(
 async def cb_cancel_fsm(
     callback: CallbackQuery,
     state: FSMContext,
+    settings: Settings,
     db_user: User | None = None,
     **kwargs: Any,
 ) -> None:
@@ -240,8 +309,56 @@ async def cb_cancel_fsm(
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
     await state.clear()
-    await callback.message.edit_text(
+    await _edit_fmt(
+        callback.message,
+        settings,
         T.MENU_USER,
+        reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "charge_send_receipt")
+async def cb_charge_send_receipt(
+    callback: CallbackQuery,
+    state: FSMContext,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    data = await state.get_data()
+    if not data.get("charge_pr_id"):
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    await state.set_state(ChargeStates.waiting_receipt)
+    await callback.message.answer(_fmt(settings, T.ASK_RECEIPT_PHOTO))
+    await callback.answer("باشه ✅")
+
+
+@router.callback_query(F.data == "charge_cancel_invoice")
+async def cb_charge_cancel_invoice(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    data = await state.get_data()
+    pr_id = data.get("charge_pr_id")
+    if pr_id:
+        pr = await session.get(PaymentRequest, int(pr_id))
+        if pr is not None:
+            await cancel_payment_request_by_user(session, pr=pr)
+    await state.clear()
+    await callback.message.answer(
+        _fmt(settings, T.INVOICE_CANCELLED),
         reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
     )
     await callback.answer()
@@ -261,30 +378,90 @@ async def charge_amount(
         return
     if db_user.is_blocked:
         await state.clear()
-        await message.answer(T.BLOCKED_USER)
+        await message.answer(_fmt(settings, T.BLOCKED_USER))
+        return
+    if not db_user.card_payment_enabled:
+        await state.clear()
+        await message.answer(_fmt(settings, T.CHARGE_DISABLED))
         return
     try:
         amount = validate_charge_amount(
             message.text or "", settings.min_charge_amount, settings.max_charge_amount
         )
     except ValidationError as e:
-        await message.answer(e.message_fa)
+        await message.answer(_fmt(settings, e.message_fa))
         return
 
     pending = await count_pending_for_user(session, db_user.id)
     if pending >= 3:
-        await message.answer(T.PENDING_LIMIT)
+        await message.answer(_fmt(settings, T.PENDING_LIMIT))
         await state.clear()
         return
 
     if await count_receipts_last_hour(session, db_user.id) >= settings.rate_limit_receipt_hour:
-        await message.answer(T.RECEIPT_RATE)
+        await message.answer(_fmt(settings, T.RECEIPT_RATE))
         await state.clear()
         return
 
-    await state.update_data(charge_amount=amount)
-    await state.set_state(ChargeStates.waiting_receipt)
-    await message.answer(T.RECEIPT_PROMPT)
+    card = await pick_public_card_for_invoice(session)
+    if card is None:
+        await message.answer(_fmt(settings, T.NO_PUBLIC_CARD))
+        await state.clear()
+        return
+
+    pr = await create_draft_payment_request(
+        session,
+        user=db_user,
+        amount=amount,
+        card=card,
+        expire_minutes=settings.payment_expire_minutes,
+    )
+    await write_audit(
+        session,
+        actor_telegram_id=message.from_user.id if message.from_user else None,
+        actor_role="user",
+        action="payment_invoice_created",
+        target_type="payment_request",
+        target_id=str(pr.id),
+        metadata={"amount": amount, "card_id": card.id},
+    )
+    await state.update_data(charge_amount=amount, charge_pr_id=pr.id)
+    await state.set_state(ChargeStates.invoice_review)
+    inv = T.INVOICE_CREATED.format(
+        card_number=card_display_number(card),
+        holder=card.card_holder,
+        bank=card.bank_name,
+        amount=format_money_toman(amount),
+        pr_id=pr.id,
+        expire_minutes=settings.payment_expire_minutes,
+    )
+    await message.answer(
+        _fmt(settings, inv),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=T.BTN_SEND_RECEIPT, callback_data="charge_send_receipt")],
+                [
+                    InlineKeyboardButton(
+                        text=T.BTN_CANCEL_INVOICE, callback_data="charge_cancel_invoice"
+                    )
+                ],
+                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="cancel_fsm")],
+            ]
+        ),
+    )
+
+
+@router.message(ChargeStates.invoice_review)
+async def charge_invoice_review_noise(
+    message: Message, settings: Settings, **kwargs: Any
+) -> None:
+    await message.answer(
+        _fmt(
+            settings,
+            "لطفاً ابتدا یکی از دکمه‌های زیر فاکتور را بزنید "
+            "یا با «بازگشت» به منو برگردید.",
+        )
+    )
 
 
 @router.message(ChargeStates.waiting_receipt, F.photo)
@@ -327,7 +504,7 @@ async def charge_receipt_doc(
         return
     doc = message.document
     if not doc or not is_allowed_receipt_content_type(doc.mime_type):
-        await message.answer(T.RECEIPT_PROMPT)
+        await message.answer(_fmt(settings, T.ASK_RECEIPT_PHOTO))
         return
     await _finalize_receipt(
         message,
@@ -356,50 +533,51 @@ async def _finalize_receipt(
         await state.clear()
         return
     data = await state.get_data()
+    pr_id = data.get("charge_pr_id")
     amount = int(data.get("charge_amount") or 0)
-    if amount <= 0:
+    if not pr_id or amount <= 0:
         await state.clear()
-        await message.answer(T.GENERIC_ERROR)
+        await message.answer(_fmt(settings, T.GENERIC_ERROR))
         return
 
     if await count_receipts_last_hour(session, db_user.id) >= settings.rate_limit_receipt_hour:
-        await message.answer(T.RECEIPT_RATE)
+        await message.answer(_fmt(settings, T.RECEIPT_RATE))
         await state.clear()
         return
 
-    pr = await create_payment_request(
-        session,
-        user=db_user,
-        amount=amount,
-        receipt_file_id=file_id,
-        receipt_kind=kind,
+    pr = await session.get(PaymentRequest, int(pr_id))
+    if pr is None:
+        await state.clear()
+        await message.answer(_fmt(settings, T.GENERIC_ERROR))
+        return
+    ok_att, err_att = await attach_receipt_to_payment_request(
+        session, pr=pr, receipt_file_id=file_id, receipt_kind=kind
     )
+    if not ok_att:
+        await message.answer(_fmt(settings, err_att or T.GENERIC_ERROR))
+        await state.clear()
+        return
+
     await write_audit(
         session,
         actor_telegram_id=message.from_user.id if message.from_user else None,
         actor_role="user",
-        action="payment_request_created",
+        action="payment_request_receipt_submitted",
         target_type="payment_request",
         target_id=str(pr.id),
         metadata={"amount": amount},
     )
     await state.clear()
-    lines = [T.CHARGE_SUBMITTED]
-    if db_user.card_view_allowed:
-        cards = (
-            await session.execute(
-                select(PaymentCard).where(PaymentCard.is_active.is_(True))
-            )
-        ).scalars().all()
-        if cards:
-            lines.append("")
-            lines.append(T.CARDS_HEADER)
-            for c in cards:
-                lines.append(f"{c.card_number_masked} — {c.card_holder} — {c.bank_name}")
-        else:
-            lines.append("")
-            lines.append(T.CARDS_NONE_ACTIVE)
-    await message.answer("\n".join(lines))
+    await message.answer(
+        _fmt(
+            settings,
+            T.RECEIPT_SUBMITTED.format(
+                pr_id=pr.id,
+                amount=format_money_toman(amount),
+            ),
+        ),
+        reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed),
+    )
 
     from app.db.models import AdminRole
 
@@ -409,17 +587,18 @@ async def _finalize_receipt(
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="تأیید", callback_data=f"ap:{pr.id}"),
-                InlineKeyboardButton(text="رد", callback_data=f"rj:{pr.id}"),
+                InlineKeyboardButton(text="✅ تایید", callback_data=f"ap:{pr.id}"),
+                InlineKeyboardButton(text="❌ رد", callback_data=f"rj:{pr.id}"),
             ]
         ]
     )
-    caption = (
-        f"درخواست شارژ\n"
-        f"id: {pr.id}\n"
-        f"user_id: {db_user.telegram_id}\n"
-        f"username: @{db_user.username or '-'}\n"
-        f"amount: {amount}"
+    uname = f"@{db_user.username}" if db_user.username else "—"
+    caption = _fmt(
+        settings,
+        f"🧾 درخواست شارژ #{pr.id}\n\n"
+        f"🆔 آیدی: {db_user.telegram_id}\n"
+        f"🔗 یوزرنیم: {uname}\n"
+        f"💵 مبلغ: {format_money_toman(amount)} تومان",
     )
 
     bot = message.bot
@@ -441,7 +620,7 @@ async def _finalize_receipt(
 
 
 @router.callback_query(F.data == "shop")
-async def cb_shop(callback: CallbackQuery, session: AsyncSession) -> None:
+async def cb_shop(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
     rows = (
         await session.execute(
             select(Server, Plan)
@@ -451,11 +630,13 @@ async def cb_shop(callback: CallbackQuery, session: AsyncSession) -> None:
         )
     ).all()
     if not rows:
-        await callback.message.edit_text(
+        await _edit_fmt(
+            callback.message,
+            settings,
             T.NO_PLANS,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="بازگشت", callback_data="main_menu")]
+                    [InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]
                 ]
             ),
         )
@@ -463,16 +644,27 @@ async def cb_shop(callback: CallbackQuery, session: AsyncSession) -> None:
         return
     buttons = []
     for srv, pl in rows:
+        n = await count_unused_for_plan(session, plan_id=pl.id)
+        price_s = format_money_toman(int(pl.price))
+        if n <= 0:
+            label = f"📦 {pl.name} | {price_s} تومان | ناموجود ❌"
+        else:
+            label = f"📦 {pl.name} | {price_s} تومان | موجودی: {n} ✅"
         buttons.append(
             [
                 InlineKeyboardButton(
-                    text=f"{srv.name} / {pl.name} — {pl.price}",
+                    text=label[:64],
                     callback_data=f"buy:{pl.id}",
                 )
             ]
         )
-    buttons.append([InlineKeyboardButton(text="بازگشت", callback_data="main_menu")])
-    await callback.message.edit_text(T.SELECT_PLAN, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    buttons.append([InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")])
+    await _edit_fmt(
+        callback.message,
+        settings,
+        T.SELECT_PLAN,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
     await callback.answer()
 
 
@@ -492,6 +684,10 @@ async def cb_buy(
     plan = await session.get(Plan, plan_id)
     if plan is None or not plan.is_active:
         await callback.answer("پلن نامعتبر است.", show_alert=True)
+        return
+    stock_n = await count_unused_for_plan(session, plan_id=plan.id)
+    if stock_n <= 0:
+        await callback.answer(T.STOCK_OUT_USER, show_alert=True)
         return
     ok_rl = await consume_rate(
         session,
@@ -515,7 +711,15 @@ async def cb_buy(
             target_id=str(plan_id),
             metadata={"error": err},
         )
-        await callback.answer(err or T.GENERIC_ERROR, show_alert=True)
+        if err and "موجودی" in err:
+            await callback.answer(T.STOCK_OUT_USER, show_alert=True)
+        elif err and "موجودی کافی" in err:
+            await callback.answer(
+                "موجودی کیف پول کافی نیست. از بخش «شارژ حساب» اقدام کنید.",
+                show_alert=True,
+            )
+        else:
+            await callback.answer(err or T.GENERIC_ERROR, show_alert=True)
         return
     await write_audit(
         session,
@@ -525,11 +729,22 @@ async def cb_buy(
         target_type="purchase",
         target_id=str(purchase_id or ""),
     )
-    await callback.message.edit_text(
-        T.PURCHASE_OK.format(link=link_text),
+    srv = await session.get(Server, plan.server_id)
+    srv_name = srv.name if srv else "—"
+    body = T.PURCHASE_OK_UX.format(
+        plan=plan.name,
+        server=srv_name,
+        price=format_money_toman(int(plan.price)),
+        purchase_id=purchase_id or 0,
+        link=link_text or "",
+    )
+    await _edit_fmt(
+        callback.message,
+        settings,
+        body,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="بازگشت", callback_data="main_menu")]
+                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]
             ]
         ),
     )
@@ -548,6 +763,7 @@ async def cb_buy(
 async def cb_hist_purchases(
     callback: CallbackQuery,
     session: AsyncSession,
+    settings: Settings,
     db_user: User | None = None,
     **kwargs: Any,
 ) -> None:
@@ -566,12 +782,14 @@ async def cb_hist_purchases(
         lines.append(
             f"#{pur.id} plan={pl.name} paid={pur.amount_paid} refunded={pur.is_refunded}"
         )
-    text = "\n".join(lines) if lines else "خریدی ثبت نشده."
-    await callback.message.edit_text(
+    text = "\n".join(lines) if lines else T.EMPTY_NO_PURCHASES
+    await _edit_fmt(
+        callback.message,
+        settings,
         text,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="بازگشت", callback_data="main_menu")]
+                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]
             ]
         ),
     )
@@ -582,6 +800,7 @@ async def cb_hist_purchases(
 async def cb_hist_payments(
     callback: CallbackQuery,
     session: AsyncSession,
+    settings: Settings,
     db_user: User | None = None,
     **kwargs: Any,
 ) -> None:
@@ -597,12 +816,14 @@ async def cb_hist_payments(
     lines = []
     for pr in q.scalars().all():
         lines.append(f"#{pr.id} amt={pr.amount} status={pr.status.value}")
-    text = "\n".join(lines) if lines else "درخواستی نیست."
-    await callback.message.edit_text(
+    text = "\n".join(lines) if lines else T.EMPTY_NO_PAYMENT_REQS
+    await _edit_fmt(
+        callback.message,
+        settings,
         text,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="بازگشت", callback_data="main_menu")]
+                [InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]
             ]
         ),
     )
