@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -25,6 +26,7 @@ async def cb_approve_payment(
     session: AsyncSession,
     after_commit: list,
     admin: Admin | None = None,
+    **kwargs: Any,
 ) -> None:
     if admin is None or admin.role not in (AdminRole.OWNER, AdminRole.MANAGER):
         await callback.answer(T.UNAUTHORIZED, show_alert=True)
@@ -74,6 +76,7 @@ async def cb_reject_payment_start(
     session: AsyncSession,
     state: FSMContext,
     admin: Admin | None = None,
+    **kwargs: Any,
 ) -> None:
     if admin is None or admin.role not in (AdminRole.OWNER, AdminRole.MANAGER):
         await callback.answer(T.UNAUTHORIZED, show_alert=True)
