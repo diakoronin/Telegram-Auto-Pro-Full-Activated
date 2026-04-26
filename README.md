@@ -5,13 +5,13 @@
 **Do not use** `sudo bash <(curl …)` — on many systems `sudo` breaks process substitution (`/dev/fd/63: No such file or directory`). Use a **pipe** instead:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh | sudo bash -s --
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh | bash -s --
 ```
 
-Custom path and branch:
+If `fresh-install.sh` is not on `main` yet, omitting the second argument makes **`install.sh` try `main` then fall back** to `cursor/telegram-sales-bot-security-712f`. Or pass branch explicitly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh | sudo bash -s -- /opt/telegram-sales-bot main
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh | bash -s -- /opt/telegram-sales-bot main
 ```
 
 You are already **root** on the VPS — you can omit `sudo`:
