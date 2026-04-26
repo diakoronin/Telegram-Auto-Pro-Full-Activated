@@ -15,8 +15,13 @@ import json
 import logging
 import os
 import re
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# با هر تغییر مهم روی سرور بزنید تا با /version مطمئن شوید نسخهٔ جدید اجرا شده است.
+BOT_VERSION = "1.3.0"
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -276,6 +281,30 @@ async def on_new_chat_title(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logger.info("عنوان گروه از پیام new_chat_title به‌روز شد: %s", chat_id)
 
 
+async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id if update.effective_user else None
+    if not is_admin(uid):
+        await update.message.reply_text("مجاز نیستید.")
+        return
+    script = Path(__file__).resolve()
+    try:
+        mtime = datetime.fromtimestamp(script.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except OSError:
+        mtime = "?"
+    env_build = os.environ.get("GROUP_SUB_BOT_BUILD", "").strip()
+    build_line = f"Build env: `{env_build}`\n" if env_build else ""
+    text = (
+        f"نسخه ربات: `{BOT_VERSION}`\n"
+        f"{build_line}"
+        f"فایل اجرا: `{script}`\n"
+        f"آخرین تغییر فایل: `{mtime}`\n"
+        f"Python: `{sys.version.split()[0]}`\n"
+        f"داده گروه‌ها: `{DATA_FILE.resolve()}`\n\n"
+        "اگر `/version` قدیمی است، روی سرور `git pull` و ری‌استارت سرویس را انجام دهید."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id if update.effective_user else None
     if not is_admin(uid):
@@ -292,6 +321,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/listgroups — دکمه‌های انتخاب گروه\n"
         "/dedupgroups — حذف دستی تکرارها از فایل (معمولاً خودکار انجام می‌شود)\n"
         "/syncgroups — همگام‌سازی دستی عنوان‌ها با تلگرام و حذف گروه‌های بدون دسترسی\n"
+        "/version — نسخهٔ در حال اجرا (برای مطمئن شدن از آپدیت سرور)\n"
         "/admincheck — بررسی اینکه ربات در هر گروه ادمین است یا نه\n"
         "/subs_start — شروع جمع‌آوری لینک‌ها (هر خط یک لینک)\n"
         "/subs_done — پایان لیست لینک‌ها\n"
@@ -620,6 +650,7 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("version", cmd_version))
     app.add_handler(CommandHandler("addgroup", cmd_addgroup))
     app.add_handler(CommandHandler("register", cmd_register))
     app.add_handler(CommandHandler("mygroups", cmd_mygroups))
