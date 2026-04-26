@@ -60,6 +60,7 @@ Usage: saka-bot <command>   (set SAKA_BOT_ROOT if not symlinked from repo)
   install       Print first-time install examples (curl / install.sh)
   update        Safe code update: stop bot, git pull, pip, restart systemd if was on
   reinstall     Rebuild .venv + pip install (no git); then restart if systemd was on
+  fresh [BR]    Full wipe + install latest (sudo). Default BR=main. Env: FRESH_DROP_DB=1
   restart       systemctl restart
   start         systemctl start
   stop          systemctl stop
@@ -83,7 +84,18 @@ Examples:
   saka-bot db-info
   sudo saka-bot db-password
   saka-bot logs-save && cat /root/telegram-sales-bot/logs/journal-snippet.txt
+  FRESH_DROP_DB=1 saka-bot fresh main   # also drop old Postgres DB from .env before wipe
 EOF
+}
+
+cmd_fresh() {
+  local br="${1:-${BRANCH:-main}}"
+  [[ -f "$ROOT/scripts/fresh-install.sh" ]] || die "scripts/fresh-install.sh missing. git pull first."
+  if [[ "$(id -u)" -ne 0 ]]; then
+    exec sudo env SAKA_BOT_UNIT="$UNIT" bash "$ROOT/scripts/fresh-install.sh" "$ROOT" "$br"
+  fi
+  export SAKA_BOT_UNIT="$UNIT"
+  exec bash "$ROOT/scripts/fresh-install.sh" "$ROOT" "$br"
 }
 
 cmd_update() {
@@ -319,6 +331,7 @@ main() {
     install) cmd_install ;;
     update) cmd_update ;;
     reinstall) cmd_reinstall ;;
+    fresh|fresh-install) cmd_fresh "$@" ;;
     restart) run_sctl restart "$UNIT" ;;
     start) run_sctl start "$UNIT" ;;
     stop) run_sctl stop "$UNIT" ;;

@@ -29,6 +29,16 @@ Commands (all ASCII):
 | `saka-bot set-owner` | Prompt → `OWNER_ID` in `.env` (Telegram numeric id) |
 | `saka-bot env-show` | Lists keys; masks token and DB URL |
 | `saka-bot install` | Prints first-time install examples |
+| `sudo saka-bot fresh BRANCH` | **Wipe install dir + unit file**, then latest `install.sh` + systemd + `saka-bot` link (needs root). Optional: `FRESH_DROP_DB=1` to drop old Postgres DB from `.env` before delete |
+
+**Full reset from curl (root, SSH TTY):**
+
+```bash
+BRANCH="cursor/telegram-sales-bot-security-712f"
+curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/${BRANCH}/scripts/fresh-install.sh" | sudo bash -s -- /root/telegram-sales-bot "$BRANCH"
+```
+
+Optional: `FRESH_DROP_DB=1` before the pipe to also run `dropdb` on the database named in the old `.env`.
 
 ---
 
