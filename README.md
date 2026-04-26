@@ -38,7 +38,11 @@ curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-A
 bash <(curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh)
 ```
 
-**چرا `sudo bash <(curl …)` گاهی خطا می‌دهد؟** فرایند substitution روی کاربر فعلی اجرا می‌شود؛ فایل‌دیسکriptور در subshell ساخته می‌شود و child process `sudo` ممکن است `/dev/fd/N` را نبیند (`No such file or directory`). با `curl … | sudo bash -s --` این مشکل نیست.
+**چرا `sudo bash <(curl …)` گاهی خطا می‌دهد؟** همان مشکل `/dev/fd/63` — با `curl | sudo bash -s --` درست است.
+
+**چرا با `curl | sudo bash` منو کار نمی‌کرد؟** stdin اسکریپت است؛ نصب‌کننده الان سوال‌ها را از **`/dev/tty`** می‌خواند تا منو و `read` درست کار کنند.
+
+**زبان ترمینال:** پیام‌های `install.sh` به انگلیسی هستند تا در همهٔ SSH/encodingها خوانا باشند؛ متن‌های ربات برای کاربر همچنان فارسی است.
 
 نصب‌کننده به‌صورت خودکار انجام می‌دهد: بسته‌های سیستم، Python 3.11، PostgreSQL، کاربر/دیتابیس `sakabot`، پرسش تعاملی (`BOT_TOKEN`, `OWNER_ID`, `PUBLIC_BASE_URL`, …)، ساخت `.env`، venv در `/opt/sakabot/.venv`، `pip install`، migration، سرویس systemd **`sakabot`**، شروع ربات، و دستور **`sakabot`** در `/usr/local/bin`.
 

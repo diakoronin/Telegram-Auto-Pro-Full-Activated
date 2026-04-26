@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# SakaBot — one-line installer (Ubuntu 22.04 / 24.04)
-# bash <(curl -Ls https://raw.githubusercontent.com/USER/REPO/main/install.sh)
-# INSTALL_BRANCH=main INSTALL_DIR=/opt/sakabot bash <(curl -Ls ...)
+# SakaBot installer — Ubuntu 22.04 / 24.04
+# Works when stdin is the script (curl | bash): all prompts read from /dev/tty
+# INSTALL_DIR=/opt/sakabot INSTALL_BRANCH=main
 
 set -Eeuo pipefail
 
@@ -15,11 +15,21 @@ INSTALL_DEV="${INSTALL_DEV:-false}"
 G="\033[0;32m"; Y="\033[1;33m"; R="\033[0;31m"; C="\033[0;36m"; N="\033[0m"
 
 log() { echo -e "${C}[sakabot]${N} $*" | tee -a "$INSTALL_LOG" >&2; }
-ok() { echo -e "${G}✓${N} $*" | tee -a "$INSTALL_LOG" >&2; }
-warn() { echo -e "${Y}!${N} $*" | tee -a "$INSTALL_LOG" >&2; }
-die() { echo -e "${R}✗${N} $*" | tee -a "$INSTALL_LOG" >&2; exit 1; }
+ok() { echo -e "${G}OK${N} $*" | tee -a "$INSTALL_LOG" >&2; }
+warn() { echo -e "${Y}WARN${N} $*" | tee -a "$INSTALL_LOG" >&2; }
+die() { echo -e "${R}ERROR${N} $*" | tee -a "$INSTALL_LOG" >&2; exit 1; }
 
-trap 'ec=$?; die "خطا در خط $LINENO (exit $ec). لاگ: $INSTALL_LOG"' ERR
+trap 'ec=$?; die "Failed at line $LINENO (exit $ec). Log: $INSTALL_LOG"' ERR
+
+# Read from terminal when stdin is the piped script (fixes: bash: /dev/fd/63: No such file)
+read_tty() {
+  if [[ -r /dev/tty ]]; then
+    # shellcheck disable=SC2162
+    read "$@" </dev/tty
+  else
+    read "$@"
+  fi
+}
 
 ACTION="install"
 for a in "$@"; do
@@ -31,8 +41,7 @@ for a in "$@"; do
     --uninstall) ACTION="uninstall" ;;
     --help|-h)
       echo "SakaBot installer"
-      echo "  sudo bash install.sh [--install|--update|--reinstall|--reinstall-full|--uninstall|--help]"
-      echo "  یا: bash <(curl -Ls URL) [--install|...]"
+      echo "  curl -fsSL .../install.sh | sudo bash -s -- [--install|--update|--reinstall|--reinstall-full|--uninstall|--help]"
       echo "Env: INSTALL_DIR INSTALL_BRANCH INSTALL_DEV=true REPO_URL"
       exit 0
       ;;
@@ -43,22 +52,22 @@ done
 chmod 600 "$INSTALL_LOG" 2>/dev/null || true
 
 require_root() {
-  [[ "${EUID:-0}" -eq 0 ]] || die "با sudo اجرا کنید: sudo bash install.sh ..."
+  [[ "${EUID:-0}" -eq 0 ]] || die "Run as root: sudo bash ...   or: curl ... | sudo bash -s --"
 }
 
 detect_ubuntu() {
-  [[ -f /etc/os-release ]] || die "os-release یافت نشد"
+  [[ -f /etc/os-release ]] || die "Missing /etc/os-release"
   # shellcheck source=/dev/null
   . /etc/os-release
-  [[ "${ID:-}" == "ubuntu" ]] || die "فقط Ubuntu پشتیبانی می‌شود (شما: ${ID:-unknown})"
+  [[ "${ID:-}" == "ubuntu" ]] || die "Only Ubuntu is supported (found: ${ID:-unknown})"
   [[ "${VERSION_ID:-}" == "22.04" || "${VERSION_ID:-}" == "24.04" ]] || \
-    die "نسخه پشتیبانی‌نشده: ${VERSION_ID:-?} — فقط 22.04 و 24.04"
+    die "Unsupported version: ${VERSION_ID:-?} (need 22.04 or 24.04)"
   export VERSION_ID
-  ok "Ubuntu ${VERSION_ID}"
+  ok "Detected Ubuntu ${VERSION_ID}"
 }
 
 install_apt_packages() {
-  log "نصب بسته‌های سیستم..."
+  log "Installing system packages..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y git curl wget nano unzip jq build-essential software-properties-common \
@@ -67,7 +76,7 @@ install_apt_packages() {
 
 ensure_python311() {
   if command -v python3.11 &>/dev/null; then
-    ok "python3.11 موجود است"
+    ok "python3.11 already installed"
     return
   fi
   if [[ "${VERSION_ID}" == "22.04" ]]; then
@@ -76,7 +85,7 @@ ensure_python311() {
     apt-get update -y
   fi
   apt-get install -y python3.11 python3.11-venv python3.11-dev
-  ok "python3.11 نصب شد"
+  ok "Installed python3.11"
 }
 
 pg_create_role_and_db() {
@@ -90,7 +99,7 @@ pg_create_role_and_db() {
     sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE sakabot OWNER sakabot;"
   fi
   sudo -u postgres psql -v ON_ERROR_STOP=1 -d sakabot -c "GRANT ALL ON SCHEMA public TO sakabot;" 2>/dev/null || true
-  ok "PostgreSQL: کاربر/دیتابیس sakabot"
+  ok "PostgreSQL user/database sakabot ready"
 }
 
 _pg_escape() {
@@ -158,41 +167,41 @@ MAX_IMPORT_LINKS=1000
 PANEL_CREDENTIAL_ENCRYPTION_KEY=${penc}
 EOF
   chmod 600 "${INSTALL_DIR}/.env"
-  ok ".env نوشته شد (BOT_TOKEN چاپ نشد)"
+  ok "Wrote .env (BOT_TOKEN not printed)"
 }
 
 clone_or_pull() {
   mkdir -p "$(dirname "$INSTALL_DIR")"
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
-    log "git pull در $INSTALL_DIR ..."
-    git -C "$INSTALL_DIR" fetch origin "$INSTALL_BRANCH" || die "git fetch ناموفق — نصب فعلی دست‌نخورده ماند"
+    log "git pull in $INSTALL_DIR ..."
+    git -C "$INSTALL_DIR" fetch origin "$INSTALL_BRANCH" || die "git fetch failed — leaving your install untouched"
     git -C "$INSTALL_DIR" checkout "$INSTALL_BRANCH" 2>/dev/null || true
-    git -C "$INSTALL_DIR" pull --ff-only origin "$INSTALL_BRANCH" || die "git pull ناموفق"
+    git -C "$INSTALL_DIR" pull --ff-only origin "$INSTALL_BRANCH" || die "git pull failed"
   else
     if [[ -e "$INSTALL_DIR" ]] && [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ]]; then
       if [[ -f "${INSTALL_DIR}/.env" ]]; then
-        warn "پوشه بدون git؛ .env نگه داشته می‌شود و مخزن کلون می‌شود"
+        warn "Directory exists without git; keeping .env and cloning repo"
         local old="${INSTALL_DIR}.preclone.$$"
         mv "$INSTALL_DIR" "$old"
         git clone --depth 1 --branch "$INSTALL_BRANCH" "$REPO_URL" "$INSTALL_DIR" || {
           git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-          git -C "$INSTALL_DIR" checkout "$INSTALL_BRANCH" || die "شاخه $INSTALL_BRANCH یافت نشد"
+          git -C "$INSTALL_DIR" checkout "$INSTALL_BRANCH" || die "Branch $INSTALL_BRANCH not found"
         }
         [[ -f "$old/.env" ]] && mv "$old/.env" "${INSTALL_DIR}/.env" && chmod 600 "${INSTALL_DIR}/.env"
         rm -rf "$old"
       else
-        die "پوشه $INSTALL_DIR بدون git و بدون .env — خالی کنید یا INSTALL_DIR عوض کنید"
+        die "Directory $INSTALL_DIR exists without git and without .env — empty it or set INSTALL_DIR"
       fi
     else
       rm -rf "$INSTALL_DIR"
-      log "git clone شاخه $INSTALL_BRANCH ..."
+      log "git clone branch $INSTALL_BRANCH ..."
       git clone --depth 1 --branch "$INSTALL_BRANCH" "$REPO_URL" "$INSTALL_DIR" || {
         git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-        git -C "$INSTALL_DIR" checkout "$INSTALL_BRANCH" || die "شاخه $INSTALL_BRANCH یافت نشد"
+        git -C "$INSTALL_DIR" checkout "$INSTALL_BRANCH" || die "Branch $INSTALL_BRANCH not found"
       }
     fi
   fi
-  ok "کد آماده است"
+  ok "Source code ready"
 }
 
 venv_install() {
@@ -207,13 +216,13 @@ venv_install() {
     pip install -r requirements-dev.txt
   fi
   deactivate
-  ok "pip install انجام شد"
+  ok "pip install done"
 }
 
 run_migrations_script() {
   cd "$INSTALL_DIR"
   bash scripts/run_migrations.sh
-  ok "Migration انجام شد"
+  ok "Migrations done"
 }
 
 compile_check() {
@@ -234,7 +243,7 @@ delete_webhook_safe() {
   set +a
   [[ -z "${BOT_TOKEN:-}" ]] && return
   curl -fsS "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook?drop_pending_updates=true" >/dev/null 2>&1 || true
-  ok "deleteWebhook (در صورت نیاز)"
+  ok "deleteWebhook called if needed"
 }
 
 write_systemd() {
@@ -257,7 +266,7 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable sakabot.service
-  ok "systemd sakabot.service"
+  ok "Installed systemd unit sakabot.service"
 }
 
 stop_service_and_dupes() {
@@ -270,27 +279,28 @@ start_service() {
   delete_webhook_safe
   systemctl restart sakabot.service
   sleep 2
-  if systemctl is-active --quiet sakabot.service; then ok "سرویس sakabot فعال است"; else warn "سرویس بالا نیامد — journalctl -u sakabot -n 80"; fi
+  if systemctl is-active --quiet sakabot.service; then ok "Service sakabot is active"; else warn "Service may have failed — run: journalctl -u sakabot -n 80"; fi
 }
 
 symlink_sakabot() {
   chmod +x "${INSTALL_DIR}/bot-manager.sh" "${INSTALL_DIR}/scripts/run_migrations.sh" 2>/dev/null || true
   ln -sf "${INSTALL_DIR}/bot-manager.sh" /usr/local/bin/sakabot
-  ok "دستور: sakabot"
+  ok "Command: sakabot -> ${INSTALL_DIR}/bot-manager.sh"
 }
 
 backup_db() {
   mkdir -p "${INSTALL_DIR}/backups"
   local f="${INSTALL_DIR}/backups/backup_$(date +%Y%m%d_%H%M%S).sql"
-  sudo -u postgres pg_dump sakabot >"$f" 2>/dev/null && ok "بکاپ دیتابیس: $f" || warn "pg_dump رد شد"
+  sudo -u postgres pg_dump sakabot >"$f" 2>/dev/null && ok "DB backup: $f" || warn "pg_dump skipped or failed"
 }
 
 prompt_if_dir_exists() {
   [[ ! -d "$INSTALL_DIR" ]] && return 0
   [[ ! -f "${INSTALL_DIR}/.env" && ! -d "${INSTALL_DIR}/.git" ]] && return 0
-  echo -e "${Y}پوشه $INSTALL_DIR از قبل وجود دارد.${N}"
-  echo "1) به‌روزرسانی (پیش‌فرض)  2) نصب مجدد، نگه‌داشتن .env و DB  3) نصب کامل (نیاز به تأیید)  4) انصراف"
-  read -r -p "انتخاب [1]: " ch
+  echo -e "${Y}$INSTALL_DIR already exists.${N}" >&2
+  echo "  1) Update (default)  2) Reinstall, keep .env + DB  3) Full reinstall (needs DELETE)  4) Cancel" >&2
+  local ch
+  read_tty -r -p "Choice [1]: " ch
   ch="${ch:-1}"
   case "$ch" in
     1) ACTION="update" ;;
@@ -302,24 +312,19 @@ prompt_if_dir_exists() {
 }
 
 interactive_questions() {
-  echo -n "ربات تلگرام BOT_TOKEN را وارد کنید: "
-  read -r BOT_TOKEN
-  [[ -n "${BOT_TOKEN:-}" ]] || die "BOT_TOKEN خالی است"
-  echo -n "آیدی عددی مالک ربات (OWNER_ID): "
-  read -r OWNER_ID
-  [[ -n "${OWNER_ID:-}" ]] || die "OWNER_ID خالی است"
-  echo -n "دامنه لینک ساب (مثال https://sub.example.com): "
-  read -r PUBLIC_BASE_URL
-  [[ -n "${PUBLIC_BASE_URL:-}" ]] || die "PUBLIC_BASE_URL خالی است"
-  echo -n "نام برند [ساکانت]: "
-  read -r BRAND_NAME
+  read_tty -r -p "Telegram BOT_TOKEN: " BOT_TOKEN
+  [[ -n "${BOT_TOKEN:-}" ]] || die "BOT_TOKEN is empty"
+  read_tty -r -p "Numeric OWNER_ID (your Telegram user id): " OWNER_ID
+  [[ -n "${OWNER_ID:-}" ]] || die "OWNER_ID is empty"
+  read_tty -r -p "PUBLIC_BASE_URL (e.g. https://sub.example.com): " PUBLIC_BASE_URL
+  [[ -n "${PUBLIC_BASE_URL:-}" ]] || die "PUBLIC_BASE_URL is empty"
+  read_tty -r -p "BRAND_NAME [default: ساکانت]: " BRAND_NAME
   BRAND_NAME="${BRAND_NAME:-ساکانت}"
-  echo -n "یوزرنیم پشتیبانی (اختیاری، بدون @): "
-  read -r SUPPORT_USERNAME
-  echo -n "رمز PostgreSQL برای sakabot (خالی = تولید خودکار): "
-  read -r -s DB_PASSWORD
-  echo
-  [[ -z "${DB_PASSWORD:-}" ]] && DB_PASSWORD="$(openssl rand -hex 16)" && echo "(رمز DB تولید شد — در .env ذخیره شد، چاپ نمی‌شود)"
+  read_tty -r -p "SUPPORT_USERNAME (optional, no @): " SUPPORT_USERNAME
+  echo -n "PostgreSQL password for user sakabot (empty = auto random): " >&2
+  read_tty -r -s DB_PASSWORD
+  echo >&2
+  [[ -z "${DB_PASSWORD:-}" ]] && DB_PASSWORD="$(openssl rand -hex 16)" && echo "(DB password generated; stored in .env only)" >&2
   PANEL_KEY="$(openssl rand -hex 32)"
 }
 
@@ -327,8 +332,8 @@ maybe_nginx() {
   local u="$1"
   if [[ "$u" =~ ^https://([^/]+) ]]; then
     local host="${BASH_REMATCH[1]}"
-    echo -n "nginx برای /sub/ و /health به 127.0.0.1:8080 تنظیم شود؟ [y/N]: "
-    read -r ngx
+    local ngx
+    read_tty -r -p "Configure nginx for /sub/ and /health -> 127.0.0.1:8080? [y/N]: " ngx
     if [[ "${ngx,,}" == "y" ]]; then
       cat > /etc/nginx/sites-available/sakabot-sub.conf <<NGX
 server {
@@ -348,32 +353,29 @@ server {
 NGX
       ln -sf /etc/nginx/sites-available/sakabot-sub.conf /etc/nginx/sites-enabled/sakabot-sub.conf
       nginx -t && systemctl reload nginx
-      ok "nginx"
-      echo -n "نصب certbot و SSL (--nginx)؟ DNS باید به این سرور اشاره کند [y/N]: "
-      read -r ssl
+      ok "nginx configured"
+      read_tty -r -p "Install certbot and run SSL (--nginx)? DNS must point here [y/N]: " ssl
       if [[ "${ssl,,}" == "y" ]]; then
         apt-get install -y certbot python3-certbot-nginx
-        echo -n "ایمیل برای Let's Encrypt: "
-        read -r lemail
-        echo -n "دامنه برای گواهی (مثال sub.example.com): "
-        read -r ledom
-        [[ -n "$ledom" ]] && certbot --nginx -d "$ledom" --non-interactive --agree-tos -m "${lemail:-admin@$ledom}" || warn "certbot نیاز به اجرای دستی دارد"
+        read_tty -r -p "Email for Let's Encrypt: " lemail
+        read_tty -r -p "Domain for certificate (e.g. sub.example.com): " ledom
+        [[ -n "$ledom" ]] && certbot --nginx -d "$ledom" --non-interactive --agree-tos -m "${lemail:-admin@$ledom}" || warn "certbot may need manual run"
       fi
     fi
   else
-    warn "بدون HTTPS دامنه، لینک ساب پایدار توصیه نمی‌شود — دامنه + HTTPS تنظیم کنید."
+    warn "Use HTTPS + domain for stable subscription links."
   fi
 }
 
 maybe_ufw() {
-  echo -n "UFW (SSH, 80, 443) فعال شود؟ [y/N]: "
-  read -r uf
+  local uf
+  read_tty -r -p "Enable UFW (allow SSH, 80, 443)? [y/N]: " uf
   if [[ "${uf,,}" == "y" ]]; then
     ufw allow OpenSSH
     ufw allow 80/tcp
     ufw allow 443/tcp
     ufw --force enable || true
-    ok "UFW"
+    ok "UFW enabled"
   fi
 }
 
@@ -381,17 +383,17 @@ print_final() {
   local pub=""
   [[ -f "${INSTALL_DIR}/.env" ]] && pub=$(grep '^PUBLIC_BASE_URL=' "${INSTALL_DIR}/.env" | cut -d= -f2- | tr -d '\r')
   echo ""
-  echo -e "${G}✅ نصب با موفقیت انجام شد${N}"
+  echo -e "${G}=== Install / update finished ===${N}"
   echo ""
-  echo "مسیر نصب:     $INSTALL_DIR"
-  echo "مدیریت:       sakabot"
-  echo "وضعیت:       systemctl status sakabot"
-  echo "لاگ زنده:    journalctl -u sakabot -f"
-  echo "Health:       curl -sS http://127.0.0.1:8080/health"
-  echo "لینک ساب:     ${pub}/sub/<token>"
+  echo "Install path:  $INSTALL_DIR"
+  echo "Manager:       sakabot"
+  echo "Service:       systemctl status sakabot"
+  echo "Logs:          journalctl -u sakabot -f"
+  echo "Health:        curl -sS http://127.0.0.1:8080/health"
+  echo "Sub URL form:  ${pub}/sub/<token>"
   echo ""
-  echo "مرحله بعد: /start در ربات، سپس /admin، کارت، پنل، پلن، خرید تست"
-  echo "لاگ نصب:     $INSTALL_LOG"
+  echo "Next: Telegram /start, then /admin, add bank card, add panel, plans, test purchase."
+  echo "Install log:   $INSTALL_LOG"
 }
 
 do_update() {
@@ -399,7 +401,8 @@ do_update() {
   detect_ubuntu
   install_apt_packages
   ensure_python311
-  [[ -d "${INSTALL_DIR}/.git" ]] || die "نصب یافت نشد — ابتدا نصب کامل را اجرا کنید"
+  [[ -d "${INSTALL_DIR}/.git" ]] || die "Install not found — run full install first"
+  [[ -f "${INSTALL_DIR}/.env" ]] || die ".env missing — restore .env or run full install"
   backup_db
   clone_or_pull
   cd "$INSTALL_DIR"
@@ -423,7 +426,7 @@ do_reinstall_keep() {
   detect_ubuntu
   install_apt_packages
   ensure_python311
-  [[ -f "${INSTALL_DIR}/.env" ]] || die ".env یافت نشد"
+  [[ -f "${INSTALL_DIR}/.env" ]] || die ".env not found"
   backup_db
   clone_or_pull
   venv_install
@@ -437,8 +440,8 @@ do_reinstall_keep() {
 }
 
 do_reinstall_full() {
-  echo -n "برای حذف فایل‌های برنامه و نصب مجدد، DELETE را تایپ کنید: "
-  read -r c
+  local c
+  read_tty -r -p "Type DELETE to wipe app files and reconfigure: " c
   [[ "$c" == "DELETE" ]] || exit 1
   require_root
   detect_ubuntu
@@ -495,10 +498,10 @@ do_fresh_install() {
 
 do_uninstall() {
   require_root
-  echo "1) فقط سرویس  2) حذف فایل ربات، نگه‌داشتن DB  3) سرویس+فایل، نگه‌داشتن DB  4) حذف کامل شامل DB"
-  read -r -p "انتخاب: " u
-  echo -n "برای ادامه DELETE را تایپ کنید: "
-  read -r d
+  echo "1) Remove systemd only  2) Remove bot files, keep DB  3) Remove service+files, keep DB  4) Full remove including DB"
+  local u d
+  read_tty -r -p "Choice: " u
+  read_tty -r -p "Type DELETE to confirm: " d
   [[ "$d" == "DELETE" ]] || exit 1
   systemctl stop sakabot.service 2>/dev/null || true
   systemctl disable sakabot.service 2>/dev/null || true
@@ -514,7 +517,7 @@ do_uninstall() {
       ;;
   esac
   rm -f /usr/local/bin/sakabot
-  ok "حذف انجام شد"
+  ok "Uninstall step done"
 }
 
 case "$ACTION" in
