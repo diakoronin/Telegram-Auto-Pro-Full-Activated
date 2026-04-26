@@ -65,6 +65,16 @@ def load_store() -> dict[str, Any]:
             data = json.load(f)
         if "groups" not in data:
             data["groups"] = []
+        groups = data["groups"]
+        deduped, changed = dedupe_groups(groups)
+        if changed:
+            data["groups"] = deduped
+            save_store(data)
+            logger.info(
+                "حذف تکرار از لیست گروه‌ها: %s رکورد → %s رکورد یکتا",
+                len(groups),
+                len(deduped),
+            )
         return data
     except (json.JSONDecodeError, OSError) as e:
         logger.error("خطا در خواندن فایل داده: %s", e)
@@ -86,7 +96,40 @@ def _find_group(groups: list[dict[str, Any]], chat_id: int) -> dict[str, Any] | 
     return None
 
 
+def dedupe_groups(groups: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """
+    یک گروه را فقط یک‌بار (بر اساس chat_id) نگه می‌دارد.
+    اگر چند رکورد با یک chat_id بود، عنوان/یوزرنیم جدیدتر جایگزین می‌شود.
+    """
+    seen_order: list[int] = []
+    by_id: dict[int, dict[str, Any]] = {}
+    for g in groups:
+        cid = g.get("chat_id")
+        if cid is None:
+            continue
+        try:
+            cid_int = int(cid)
+        except (TypeError, ValueError):
+            continue
+        if cid_int not in by_id:
+            seen_order.append(cid_int)
+            by_id[cid_int] = dict(g)
+            by_id[cid_int]["chat_id"] = cid_int
+        else:
+            cur = by_id[cid_int]
+            if g.get("title"):
+                cur["title"] = g["title"]
+            if g.get("username") is not None:
+                cur["username"] = g.get("username")
+    out = [by_id[i] for i in seen_order]
+    return out, len(out) != len(groups)
+
+
 CHAT_ID_RE = re.compile(r"^-?\d+$")
+# دکمه‌های جدید: g:<chat_id> — با pick:<n> قدیمی تداخل ندارد
+GROUP_CB_PREFIX = "g:"
+# دکمه‌های قدیمی: pick:1 (ایندکس ۱-based)
+LEGACY_PICK_INDEX_RE = re.compile(r"^pick:(\d+)$")
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -103,6 +146,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/mygroups — لیست شماره‌دار گروه‌های ذخیره‌شده\n"
         "/pick <شماره> — انتخاب گروه مقصد برای ارسال لینک‌ها\n"
         "/listgroups — دکمه‌های انتخاب گروه\n"
+        "/dedupgroups — حذف دستی تکرارها از فایل (معمولاً خودکار انجام می‌شود)\n"
         "/admincheck — بررسی اینکه ربات در هر گروه ادمین است یا نه\n"
         "/subs_start — شروع جمع‌آوری لینک‌ها (هر خط یک لینک)\n"
         "/subs_done — پایان لیست لینک‌ها\n"
@@ -222,8 +266,11 @@ async def cmd_listgroups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     rows = []
     row: list[InlineKeyboardButton] = []
     for i, g in enumerate(groups, start=1):
-        label = f"{i}. {(g.get('title') or '?')[:24]}"
-        row.append(InlineKeyboardButton(label, callback_data=f"pick:{i}"))
+        cid = g.get("chat_id")
+        if cid is None:
+            continue
+        label = f"{i}. {(g.get('title') or '?')[:20]}"
+        row.append(InlineKeyboardButton(label, callback_data=f"{GROUP_CB_PREFIX}{cid}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -239,24 +286,49 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await q.answer("مجاز نیستید.", show_alert=True)
         return
     data = q.data or ""
-    if not data.startswith("pick:"):
-        await q.answer()
-        return
-    try:
-        n = int(data.split(":", 1)[1])
-    except ValueError:
-        await q.answer()
-        return
     store = load_store()
     groups = store["groups"]
-    if n < 1 or n > len(groups):
-        await q.answer("نامعتبر", show_alert=True)
+    g: dict[str, Any] | None = None
+    if data.startswith(GROUP_CB_PREFIX):
+        rest = data[len(GROUP_CB_PREFIX) :]
+        if CHAT_ID_RE.match(rest):
+            cid = int(rest)
+            g = _find_group(groups, cid)
+    if g is None:
+        m = LEGACY_PICK_INDEX_RE.match(data)
+        if m:
+            try:
+                n = int(m.group(1))
+            except ValueError:
+                n = 0
+            if 1 <= n <= len(groups):
+                g = groups[n - 1]
+    if g is None:
+        await q.answer("گروه در لیست نیست.", show_alert=True)
         return
-    g = groups[n - 1]
     context.user_data["target_chat_id"] = g["chat_id"]
     context.user_data["target_title"] = g.get("title", "")
     await q.answer()
     await q.edit_message_text(f"مقصد انتخاب شد: {g.get('title')} (`{g['chat_id']}`)", parse_mode="Markdown")
+
+
+async def cmd_dedupgroups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id if update.effective_user else None
+    if not is_admin(uid):
+        await update.message.reply_text("مجاز نیستید.")
+        return
+    store = load_store()
+    groups = store.get("groups") or []
+    before = len(groups)
+    deduped, changed = dedupe_groups(groups)
+    if not changed:
+        await update.message.reply_text("تکراری در فایل نبود؛ همه chat_idها یکتا هستند.")
+        return
+    store["groups"] = deduped
+    save_store(store)
+    await update.message.reply_text(
+        f"انجام شد. قبل: {before} رکورد، بعد: {len(deduped)} گروه یکتا ({before - len(deduped)} تکرار حذف شد)."
+    )
 
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -393,12 +465,13 @@ def main() -> None:
     app.add_handler(CommandHandler("mygroups", cmd_mygroups))
     app.add_handler(CommandHandler("pick", cmd_pick))
     app.add_handler(CommandHandler("listgroups", cmd_listgroups))
+    app.add_handler(CommandHandler("dedupgroups", cmd_dedupgroups))
     app.add_handler(CommandHandler("remove", cmd_remove))
     app.add_handler(CommandHandler("admincheck", cmd_admincheck))
     app.add_handler(CommandHandler("subs_start", cmd_subs_start))
     app.add_handler(CommandHandler("subs_done", cmd_subs_done))
     app.add_handler(CommandHandler("send_subs", cmd_send_subs))
-    app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^pick:\d+$"))
+    app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^(g:-?\d+|pick:\d+)$"))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_collect_subs),
         group=1,
