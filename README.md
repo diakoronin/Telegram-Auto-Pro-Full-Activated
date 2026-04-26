@@ -41,7 +41,7 @@ python3 group_sub_bot.py
 ### آپدیت مستقیم روی سرور
 
 ```bash
-cd Telegram-Auto-Pro-Full-Activated
+cd ~/Telegram-Auto-Pro-Full-Activated
 git fetch origin
 git checkout cursor/telegram-group-sub-bot-0f07
 git pull origin cursor/telegram-group-sub-bot-0f07
@@ -49,7 +49,28 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-بعد ربات را دوباره اجرا کنید (مثلاً `systemctl restart ...` یا `Ctrl+C` و دوباره `python3 group_sub_bot.py`).
+بعد ربات را دوباره اجرا کنید.
+
+**اگر با systemd اجرا می‌کنید** (نام واحد در این مخزن: **`group-sub-bot`** — فایل نمونه: `deploy/group-sub-bot.service`):
+
+```bash
+cd ~/Telegram-Auto-Pro-Full-Activated
+git pull origin cursor/telegram-group-sub-bot-0f07
+source .venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart group-sub-bot
+sudo systemctl status group-sub-bot
+```
+
+اگر نام سرویس شما فرق دارد، روی سرور بزنید تا پیدا کنید:
+
+```bash
+systemctl list-units --type=service --all | grep -iE 'bot|telegram|group'
+```
+
+همان نام را در `systemctl restart <نام>` بگذارید.
+
+**اگر بدون systemd** با ترمینال باز است: `Ctrl+C` و دوباره `python3 group_sub_bot.py`.
 
 **بعد از مرج به `main`:** به‌جای شاخهٔ بالا از `git checkout main` و `git pull origin main` استفاده کنید.
 

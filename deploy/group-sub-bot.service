@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram group_sub_bot (group list and sub links)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Telegram-Auto-Pro-Full-Activated
+EnvironmentFile=-/root/Telegram-Auto-Pro-Full-Activated/.env
+ExecStart=/root/Telegram-Auto-Pro-Full-Activated/.venv/bin/python3 /root/Telegram-Auto-Pro-Full-Activated/group_sub_bot.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
