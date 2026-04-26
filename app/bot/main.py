@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -19,6 +18,7 @@ from app.config import load_settings
 from app.db.base import init_db
 from app import texts_fa as T
 from app.message_format import format_message
+from app.subscription_api import create_subscription_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,7 +79,20 @@ async def main() -> None:
         except Exception:
             logger.debug("owner notify skipped")
 
-    await dp.start_polling(bot)
+    if settings.subscription_endpoint_enabled:
+        import uvicorn
+
+        app = create_subscription_app(settings)
+        cfg = uvicorn.Config(
+            app,
+            host=settings.subscription_bind_host,
+            port=settings.subscription_bind_port,
+            log_level="info",
+        )
+        server = uvicorn.Server(cfg)
+        await asyncio.gather(server.serve(), dp.start_polling(bot))
+    else:
+        await dp.start_polling(bot)
 
 
 if __name__ == "__main__":

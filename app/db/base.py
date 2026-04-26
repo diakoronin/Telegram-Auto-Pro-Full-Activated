@@ -152,6 +152,88 @@ async def migrate_schema(database_url: str) -> None:
                 )
             except Exception:
                 pass
+            # API panels / per-service subscription (one subscription_token per user_services row)
+            await conn.execute(
+                text(
+                    "ALTER TABLE servers ADD COLUMN IF NOT EXISTS location_label VARCHAR(120)"
+                )
+            )
+            await conn.execute(
+                text("ALTER TABLE servers ADD COLUMN IF NOT EXISTS panel_id INTEGER")
+            )
+            await conn.execute(
+                text("ALTER TABLE servers ADD COLUMN IF NOT EXISTS panel_type VARCHAR(32)")
+            )
+            await conn.execute(
+                text("ALTER TABLE servers ADD COLUMN IF NOT EXISTS inbound_id INTEGER")
+            )
+            await conn.execute(
+                text("ALTER TABLE servers ADD COLUMN IF NOT EXISTS template_id INTEGER")
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE servers ADD COLUMN IF NOT EXISTS is_visible_to_users "
+                    "BOOLEAN NOT NULL DEFAULT true"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE servers ADD COLUMN IF NOT EXISTS supports_location_change "
+                    "BOOLEAN NOT NULL DEFAULT true"
+                )
+            )
+            await conn.execute(
+                text("ALTER TABLE servers ADD COLUMN IF NOT EXISTS note TEXT")
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE servers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ "
+                    "NOT NULL DEFAULT NOW()"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS volume_gb INTEGER "
+                    "NOT NULL DEFAULT 1"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS is_visible_to_users "
+                    "BOOLEAN NOT NULL DEFAULT true"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS user_service_id INTEGER"
+                )
+            )
+            try:
+                await conn.execute(text("ALTER TABLE purchases ALTER COLUMN link_id DROP NOT NULL"))
+            except Exception:
+                pass
+            await conn.execute(
+                text(
+                    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS user_service_id INTEGER"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS status VARCHAR(32) "
+                    "NOT NULL DEFAULT 'open'"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS admin_reply TEXT"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ "
+                    "NOT NULL DEFAULT NOW()"
+                )
+            )
         if dialect == "sqlite":
             r3 = await conn.execute(text("PRAGMA table_info(users)"))
             ucols3 = {row[1] for row in r3.fetchall()}

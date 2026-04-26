@@ -50,6 +50,13 @@ class Settings:
     rate_limit_purchase_minute: int
     rate_limit_support_minute: int
     rate_limit_admin_import_minute: int
+    # Per-service stable subscription (PUBLIC_BASE_URL/sub/{subscription_token})
+    public_base_url: str
+    subscription_endpoint_enabled: bool
+    sub_base64_enabled: bool
+    subscription_bind_host: str
+    subscription_bind_port: int
+    panel_credential_encryption_key: str
 
 
 def load_settings() -> Settings:
@@ -70,6 +77,13 @@ def load_settings() -> Settings:
     max_import = _int("MAX_IMPORT_LINKS", 1000)
     if max_import <= 0 or max_import > 50_000:
         raise RuntimeError("Invalid MAX_IMPORT_LINKS")
+
+    public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    sub_enabled = _bool("SUBSCRIPTION_ENDPOINT_ENABLED", True)
+    sub_b64 = _bool("SUB_BASE64_ENABLED", False)
+    sub_host = os.getenv("SUBSCRIPTION_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    sub_port = max(1, min(65535, _int("SUBSCRIPTION_BIND_PORT", 8080)))
+    panel_key = os.getenv("PANEL_CREDENTIAL_ENCRYPTION_KEY", "").strip()
 
     return Settings(
         bot_token=bot_token,
@@ -95,4 +109,10 @@ def load_settings() -> Settings:
         rate_limit_admin_import_minute=max(
             1, _int("RATE_LIMIT_ADMIN_IMPORT_MINUTE", 3)
         ),
+        public_base_url=public_base_url,
+        subscription_endpoint_enabled=sub_enabled,
+        sub_base64_enabled=sub_b64,
+        subscription_bind_host=sub_host,
+        subscription_bind_port=sub_port,
+        panel_credential_encryption_key=panel_key,
     )
