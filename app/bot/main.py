@@ -6,7 +6,6 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 from aiogram.types import ErrorEvent
 
 from app.bot.handlers import setup_routers
@@ -31,10 +30,8 @@ async def main() -> None:
     settings = load_settings()
     await init_db(settings.database_url)
 
-    bot = Bot(
-        settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    # Plain text only: default HTML parse mode breaks many Persian messages as "invalid entities".
+    bot = Bot(settings.bot_token, default=DefaultBotProperties())
     dp = Dispatcher()
 
     dp.update.outer_middleware(SettingsMiddleware(settings))
