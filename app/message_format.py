@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -42,6 +43,11 @@ def format_money_toman(amount: int) -> str:
     return f"{int(amount):,}"
 
 
+def format_money(amount: int) -> str:
+    """Alias for format_money_toman."""
+    return format_money_toman(amount)
+
+
 def format_purchase_datetime(settings: Settings, dt: datetime | None) -> str:
     """Jalali date + local time for purchase rows."""
     if dt is None:
@@ -53,3 +59,23 @@ def format_purchase_datetime(settings: Settings, dt: datetime | None) -> str:
     date_s = jd.strftime("%Y/%m/%d")
     time_s = local.strftime("%H:%M")
     return f"{date_s} - {time_s}"
+
+
+def format_jalali_datetime(settings: Settings, dt: datetime | None) -> str:
+    """Full Jalali date + local time."""
+    return format_purchase_datetime(settings, dt)
+
+
+def format_jalali_date_only(settings: Settings, dt: datetime | None) -> str:
+    if dt is None:
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    local = dt.astimezone(ZoneInfo(settings.timezone))
+    jd = jdatetime.datetime.fromgregorian(datetime=local)
+    return jd.strftime("%Y/%m/%d")
+
+
+def format_copyable_code(text: str) -> str:
+    """Telegram HTML: tap-to-copy single block."""
+    return f"<code>{html.escape(text, quote=False)}</code>"

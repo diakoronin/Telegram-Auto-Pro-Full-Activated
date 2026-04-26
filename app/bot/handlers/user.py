@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from aiogram import F, Router
@@ -15,7 +17,13 @@ from app import texts_fa as T
 from app.config import Settings
 from app.db.models import Admin, Link, PaymentCard, PaymentRequest, Plan, Purchase, Server, User
 from app.bot.states import ChargeStates, PurchaseStates, SupportStates
-from app.message_format import format_message, format_money_toman, format_purchase_datetime
+from app.message_format import (
+    format_copyable_code,
+    format_jalali_datetime,
+    format_message,
+    format_money_toman,
+    format_purchase_datetime,
+)
 from app.services.audit import write_audit
 from app.services.cards import card_display_number, pick_public_card_for_invoice
 from app.services.links import purchase_plan_for_user
@@ -73,13 +81,15 @@ def _main_kb(*, card_view_allowed: bool = False) -> InlineKeyboardMarkup:
 async def _answer_fmt(
     message: Message, settings: Settings, text: str, **kwargs: Any
 ) -> Any:
-    return await message.answer(_fmt(settings, text), **kwargs)
+    pm = kwargs.pop("parse_mode", None)
+    return await message.answer(_fmt(settings, text), parse_mode=pm, **kwargs)
 
 
 async def _edit_fmt(
     message: Message, settings: Settings, text: str, **kwargs: Any
 ) -> Any:
-    return await message.edit_text(_fmt(settings, text), **kwargs)
+    pm = kwargs.pop("parse_mode", None)
+    return await message.edit_text(_fmt(settings, text), parse_mode=pm, **kwargs)
 
 
 @router.message(CommandStart())
@@ -439,16 +449,18 @@ async def charge_amount(
     )
     await state.update_data(charge_amount=amount, charge_pr_id=pr.id)
     await state.set_state(ChargeStates.invoice_review)
-    inv = T.INVOICE_CREATED.format(
-        card_number=card_display_number(card),
-        holder=card.card_holder,
-        bank=card.bank_name,
+    card_num = card_display_number(card)
+    inv = T.INVOICE_CREATED_HTML.format(
+        card_html=format_copyable_code(card_num),
+        holder=html.escape(card.card_holder),
+        bank=html.escape(card.bank_name),
         amount=format_money_toman(amount),
         pr_id=pr.id,
         expire_minutes=settings.payment_expire_minutes,
     )
     await message.answer(
         _fmt(settings, inv),
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=T.BTN_SEND_RECEIPT, callback_data="charge_send_receipt")],
@@ -703,7 +715,7 @@ async def cb_shop_server(
         if n <= 0:
             row_text = f"📦 {label} | {price_s} تومان | ناموجود ❌"
         else:
-            row_text = f"📦 {label} | {price_s} تومان | موجودی: {n} ✅"
+            row_text = f"📦 {label} | {price_s} تومان | {n} عدد ✅"
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -777,7 +789,7 @@ async def cb_shop_plan_pick(
             [InlineKeyboardButton(text=T.BTN_BACK, callback_data=f"shop_srv:{sid}")],
         ]
     )
-    await callback.message.answer(_fmt(settings, T.SHOP_ASK_CUSTOM_NAME), reply_markup=kb)
+    await callback.message.answer(_fmt(settings, T.SHOP_ASK_CUSTOM_NAME_SHORT), reply_markup=kb)
     await callback.answer()
 
 
@@ -813,9 +825,9 @@ async def cb_shop_name_skip(
     await state.set_state(None)
     stock_n = await count_unused_for_plan(session, server_id=sid, plan_id=pid)
     preview = T.SHOP_PURCHASE_PREVIEW.format(
-        service_name=name,
-        server=srv.name,
-        plan=plan_display_label(plan),
+        service_name=html.escape(name),
+        server=html.escape(srv.name),
+        plan=html.escape(plan_display_label(plan)),
         price=format_money_toman(int(plan.price)),
         stock=stock_n,
         wallet=format_money_toman(int(db_user.wallet_balance)),
@@ -827,7 +839,9 @@ async def cb_shop_name_skip(
             [InlineKeyboardButton(text=T.BTN_BACK, callback_data=f"shop_srv:{sid}")],
         ]
     )
-    await callback.message.answer(_fmt(settings, preview), reply_markup=kb)
+    await callback.message.answer(
+        _fmt(settings, preview), parse_mode="HTML", reply_markup=kb
+    )
     await callback.answer()
 
 
@@ -867,9 +881,9 @@ async def msg_purchase_custom_name(
     await state.set_state(None)
     stock_n = await count_unused_for_plan(session, server_id=sid, plan_id=pid)
     preview = T.SHOP_PURCHASE_PREVIEW.format(
-        service_name=name,
-        server=srv.name,
-        plan=plan_display_label(plan),
+        service_name=html.escape(name),
+        server=html.escape(srv.name),
+        plan=html.escape(plan_display_label(plan)),
         price=format_money_toman(int(plan.price)),
         stock=stock_n,
         wallet=format_money_toman(int(db_user.wallet_balance)),
@@ -881,7 +895,7 @@ async def msg_purchase_custom_name(
             [InlineKeyboardButton(text=T.BTN_BACK, callback_data=f"shop_srv:{sid}")],
         ]
     )
-    await message.answer(_fmt(settings, preview), reply_markup=kb)
+    await message.answer(_fmt(settings, preview), parse_mode="HTML", reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("shop_confirm:"))
@@ -964,18 +978,21 @@ async def cb_shop_confirm(
         target_id=str(purchase_id or ""),
         metadata={"custom_service_name": custom, "server_id": sid},
     )
-    body = T.PURCHASE_OK_UX.format(
-        service_name=custom,
-        plan=plan_display_label(plan),
-        server=srv.name,
+    when = format_jalali_datetime(settings, datetime.now(tz=UTC))
+    body = T.PURCHASE_OK_UX_HTML.format(
+        service_name=html.escape(custom),
+        plan=html.escape(plan_display_label(plan)),
+        server=html.escape(srv.name),
         price=format_money_toman(int(plan.price)),
         purchase_id=purchase_id or 0,
-        link=link_text or "",
+        when=when,
+        link_html=format_copyable_code(link_text or ""),
     )
     await _edit_fmt(
         callback.message,
         settings,
         body,
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=T.BTN_BACK, callback_data="main_menu")]
@@ -1005,9 +1022,10 @@ async def cb_hist_purchases(
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
     q = await session.execute(
-        select(Purchase, Plan, Server)
+        select(Purchase, Plan, Server, Link)
         .join(Plan, Plan.id == Purchase.plan_id)
         .join(Server, Server.id == Purchase.server_id)
+        .join(Link, Link.id == Purchase.link_id)
         .where(Purchase.user_id == db_user.id)
         .order_by(Purchase.id.desc())
         .limit(15)
@@ -1019,17 +1037,19 @@ async def cb_hist_purchases(
     else:
         blocks = [T.MY_SERVICES_TITLE + "\n"]
         kb_rows: list[list[InlineKeyboardButton]] = []
-        for i, (pur, pl, srv) in enumerate(rows, start=1):
+        for i, (pur, pl, srv, link) in enumerate(rows, start=1):
             dt_s = format_purchase_datetime(settings, pur.created_at)
             plan_lbl = plan_display_label(pl)
             blocks.append(
                 f"\n{i})\n"
-                f"📝 نام سرویس: {pur.custom_service_name}\n"
-                f"🌐 سرور: {srv.name}\n"
-                f"📦 پلن: {plan_lbl}\n"
+                f"📝 نام سرویس: {html.escape(pur.custom_service_name)}\n"
+                f"🌐 سرور: {html.escape(srv.name)}\n"
+                f"📦 پلن: {html.escape(plan_lbl)}\n"
                 f"💵 مبلغ: {format_money_toman(int(pur.amount_paid))} تومان\n"
-                f"🧾 شماره سفارش: #{pur.id}\n"
-                f"📅 تاریخ خرید: {dt_s}"
+                f"🧾 سفارش: #{pur.id}\n"
+                f"📅 تاریخ: {dt_s}\n\n"
+                "🔗 لینک:\n"
+                f"{format_copyable_code(link.link_text)}"
             )
             kb_rows.append(
                 [
@@ -1045,6 +1065,7 @@ async def cb_hist_purchases(
         callback.message,
         settings,
         text,
+        parse_mode="HTML" if rows else None,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
     )
     await callback.answer()
@@ -1077,10 +1098,11 @@ async def cb_purchase_detail(
     dt_s = format_purchase_datetime(settings, pur.created_at)
     body = (
         f"{T.MY_SERVICES_DETAIL_TITLE}\n\n"
-        f"📝 نام سرویس: {pur.custom_service_name}\n"
-        f"🌐 سرور: {srv.name}\n"
-        f"📦 پلن: {plan_display_label(pl)}\n"
-        f"🔗 لینک سرویس:\n{link.link_text}\n"
+        f"📝 نام سرویس: {html.escape(pur.custom_service_name)}\n"
+        f"🌐 سرور: {html.escape(srv.name)}\n"
+        f"📦 پلن: {html.escape(plan_display_label(pl))}\n"
+        "🔗 لینک سرویس:\n"
+        f"{format_copyable_code(link.link_text)}\n"
         f"🧾 شماره سفارش: #{pur.id}\n"
         f"📅 تاریخ خرید: {dt_s}"
     )
@@ -1088,6 +1110,7 @@ async def cb_purchase_detail(
         callback.message,
         settings,
         body,
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=T.BTN_BACK, callback_data="hist_purchases")]

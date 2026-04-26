@@ -31,7 +31,6 @@ async def main() -> None:
     settings = load_settings()
     await init_db(settings.database_url)
 
-    # Plain text only: default HTML parse mode breaks many Persian messages as "invalid entities".
     bot = Bot(settings.bot_token, default=DefaultBotProperties())
     try:
         await bot.delete_webhook(drop_pending_updates=False)
@@ -61,7 +60,8 @@ async def main() -> None:
                 )
             elif event.update.callback_query:
                 await event.update.callback_query.answer(
-                    format_message(settings, T.GENERIC_ERROR), show_alert=True
+                    format_message(settings, T.GENERIC_ERROR),
+                    show_alert=True,
                 )
         except Exception:
             logger.exception("Failed to send user-friendly error")

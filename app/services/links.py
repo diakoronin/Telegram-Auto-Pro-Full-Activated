@@ -117,33 +117,32 @@ async def admin_manual_deliver(
     server_id: int,
     plan_id: int,
     customer_info: str | None,
-) -> tuple[bool, str | None, str | None]:
+) -> tuple[bool, str | None, str | None, int | None]:
     plan = await session.get(Plan, plan_id)
     if plan is None or plan.server_id != server_id:
-        return False, None, "پلن نامعتبر است."
+        return False, None, "پلن نامعتبر است.", None
     if not plan.is_active:
-        return False, None, "پلن غیرفعال است."
+        return False, None, "پلن غیرفعال است.", None
 
     link = await pick_unused_link(session, server_id=server_id, plan_id=plan_id)
     if link is None:
-        return False, None, "لینک خالی موجود نیست."
+        return False, None, "لینک خالی موجود نیست.", None
 
     link.status = LinkStatus.USED
     meta: dict[str, Any] = {"server_id": server_id, "plan_id": plan_id}
     if customer_info:
         meta["customer"] = customer_info
-    session.add(
-        Delivery(
-            link_id=link.id,
-            user_id=None,
-            admin_id=admin_id,
-            purchase_id=None,
-            channel="admin_manual",
-            metadata_json=meta,
-        )
+    d = Delivery(
+        link_id=link.id,
+        user_id=None,
+        admin_id=admin_id,
+        purchase_id=None,
+        channel="admin_manual",
+        metadata_json=meta,
     )
+    session.add(d)
     await session.flush()
-    return True, link.link_text, None
+    return True, link.link_text, None, d.id
 
 
 async def return_link(

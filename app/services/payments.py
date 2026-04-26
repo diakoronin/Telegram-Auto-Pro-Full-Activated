@@ -163,12 +163,13 @@ async def approve_payment_request(
     *,
     request_id: int,
     reviewer: Admin,
-) -> tuple[PaymentRequest | None, str | None]:
+) -> tuple[PaymentRequest | None, int | None, int | None, str | None]:
     """
-    Approve in one transaction with row lock. Returns (request, error_fa).
+    Approve in one transaction with row lock.
+    Returns (request, balance_before, balance_after, error_fa).
     """
     if reviewer.role not in (AdminRole.OWNER, AdminRole.MANAGER):
-        return None, "دسترسی مجاز نیست."
+        return None, None, None, "دسترسی مجاز نیست."
 
     stmt = (
         select(PaymentRequest)
@@ -178,17 +179,17 @@ async def approve_payment_request(
     r = await session.execute(stmt)
     pr = r.scalar_one_or_none()
     if pr is None:
-        return None, "درخواست یافت نشد."
+        return None, None, None, "درخواست یافت نشد."
     if pr.status != PaymentRequestStatus.PENDING:
-        return None, "این درخواست قبلاً بررسی شده است."
+        return None, None, None, "این درخواست قبلاً بررسی شده است."
     if pr.receipt_kind == "pending" or not (pr.receipt_file_id or "").strip():
-        return None, "هنوز رسیدی برای این درخواست ثبت نشده است."
+        return None, None, None, "هنوز رسیدی برای این درخواست ثبت نشده است."
 
     u_stmt = select(User).where(User.id == pr.user_id).with_for_update()
     ur = await session.execute(u_stmt)
     user = ur.scalar_one_or_none()
     if user is None:
-        return None, "کاربر یافت نشد."
+        return None, None, None, "کاربر یافت نشد."
 
     before = int(user.wallet_balance)
     after = before + int(pr.amount)
@@ -209,7 +210,7 @@ async def approve_payment_request(
         )
     )
     await session.flush()
-    return pr, None
+    return pr, before, after, None
 
 
 async def reject_payment_request(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from aiogram import F, Router
@@ -20,7 +21,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import texts_fa as T
-from app.message_format import format_message, format_money_toman
+from app.message_format import (
+    format_copyable_code,
+    format_jalali_datetime,
+    format_message,
+    format_money_toman,
+)
 from app.bot.filters import IsAdmin, IsManagerOrOwner, IsOwner
 from app.bot.states import AdminStates
 from app.config import Settings
@@ -41,8 +47,15 @@ from app.services.confirmations import create_confirmation, take_confirmation_if
 from app.services.delete_unused import delete_unused_links
 from app.services.import_links import bulk_import_links_detailed
 from app.services.links import admin_manual_deliver, return_link
+from app.services.plan_display import plan_display_label
 from app.services.rate_limit import consume_rate
 from app.services.payments import list_pending_for_review, reject_payment_request
+from app.services.sales_report import (
+    aggregate_sales,
+    window_this_month,
+    window_today,
+    window_yesterday,
+)
 from app.services.stock import get_all_servers_stock_summary, get_server_stock_summary
 from app.services.users import get_admin_by_telegram
 from app.services.cards import card_display_number
@@ -130,6 +143,11 @@ def _kb_cat_users(admin: Admin) -> InlineKeyboardMarkup:
 
 def _kb_cat_mgmt(admin: Admin) -> InlineKeyboardMarkup:
     rows = [
+        [
+            InlineKeyboardButton(
+                text="📊 گزارش فروش امروز", callback_data="adm:sales_report:today"
+            )
+        ],
         [InlineKeyboardButton(text=T.ADM_REPORTS, callback_data="adm:backup_menu")],
     ]
     if admin.role == AdminRole.OWNER:
@@ -377,11 +395,9 @@ async def cb_server_detail(
     for p in plans:
         sum_unused += p.unused_count
         if p.unused_count > 0:
-            plan_lines.append(
-                f"▫️ {p.plan_name}: {p.unused_count} عدد آماده فروش ✅"
-            )
+            plan_lines.append(f"▫️ {p.plan_name}: {p.unused_count} عدد ✅")
         else:
-            plan_lines.append(f"▫️ {p.plan_name}: 0 عدد ناموجود ❌")
+            plan_lines.append(f"▫️ {p.plan_name}: 0 ❌")
     body = (
         f"📦 مدیریت سرور\n\n🌐 سرور: {srv.name}\nوضعیت: {st}\n"
         + "\n".join(plan_lines)
@@ -893,7 +909,7 @@ async def msg_manual_customer(
         except ValidationError as e:
             await message.answer(e.message_fa)
             return
-    ok, link, err = await admin_manual_deliver(
+    ok, link, err, delivery_id = await admin_manual_deliver(
         session,
         admin_id=admin.id,
         server_id=sid,
@@ -913,7 +929,25 @@ async def msg_manual_customer(
     )
     plan_id_for_stock = int(data["md_plan_id"])
     await state.clear()
-    await message.answer(f"لینک:\n{link}", reply_markup=_admin_root_kb(admin))
+    srv = await session.get(Server, sid)
+    pl = await session.get(Plan, pid)
+    srv_n = srv.name if srv else "—"
+
+    dt_s = format_jalali_datetime(settings, datetime.now(tz=UTC))
+    body = (
+        "✅ لینک آماده تحویل\n\n"
+        f"📦 {plan_display_label(pl) if pl else '—'}\n"
+        f"🌐 {srv_n}\n"
+        f"🧾 #{delivery_id or 0}\n"
+        f"🕒 {dt_s}\n\n"
+        "🔗 لینک:\n"
+        f"{format_copyable_code(link or '')}"
+    )
+    await message.answer(
+        format_message(settings, body),
+        parse_mode="HTML",
+        reply_markup=_admin_root_kb(admin),
+    )
     bot = message.bot
 
     async def _stock() -> None:
@@ -1584,7 +1618,13 @@ async def cb_wallet_adjust(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "adm:backup_menu", IsManagerOrOwner())
 async def cb_backup_menu(callback: CallbackQuery, admin: Admin) -> None:
-    rows = []
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="📊 گزارش فروش امروز", callback_data="adm:sales_report:today"
+            )
+        ],
+    ]
     if admin.role == AdminRole.OWNER:
         rows.append(
             [InlineKeyboardButton(text="پشتیبان کامل (مالک)", callback_data="adm:backup_full")]
@@ -1595,6 +1635,115 @@ async def cb_backup_menu(callback: CallbackQuery, admin: Admin) -> None:
         )
     rows.append([InlineKeyboardButton(text="بازگشت", callback_data="admin_home")])
     await callback.message.edit_text("انتخاب کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+def _sales_report_keyboard(period: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=T.BTN_SALES_REFRESH,
+                    callback_data=f"adm:sales_report:{period}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=T.BTN_SALES_YESTERDAY,
+                    callback_data="adm:sales_report:yesterday",
+                ),
+                InlineKeyboardButton(
+                    text=T.BTN_SALES_MONTH,
+                    callback_data="adm:sales_report:month",
+                ),
+            ],
+            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:backup_menu")],
+        ]
+    )
+
+
+def _render_sales_report_text(
+    settings: Settings,
+    agg,
+    *,
+    period: str,
+    window_label: str,
+    jalali_date: str,
+) -> str:
+    from app.message_format import format_money_toman
+
+    if agg.total_orders == 0:
+        return T.SALES_REPORT_EMPTY
+    if period == "today":
+        title = "📊 گزارش فروش امروز"
+    elif period == "yesterday":
+        title = "📊 گزارش فروش دیروز"
+    elif period == "month":
+        title = "📊 گزارش فروش این ماه"
+    else:
+        title = f"📊 گزارش فروش ({window_label})"
+    lines = [
+        title,
+        "",
+        f"📅 {jalali_date}",
+        "⏰ بازهٔ گزارش: " + window_label,
+        "",
+        f"📦 مجموع حجم: {agg.total_gb:g} گیگ",
+        f"🛒 سفارش‌ها: {agg.total_orders}",
+        f"💵 فروش: {format_money_toman(agg.total_revenue)} تومان",
+        "",
+        "جزئیات پلن:",
+    ]
+    for lbl, (cnt, rev) in sorted(agg.by_plan_label.items()):
+        lines.append(
+            f"▫️ {lbl}: {cnt} | {format_money_toman(rev)} تومان"
+        )
+    lines.append("")
+    lines.append("🌐 سرورها:")
+    for sname, (gb, cnt, rev) in sorted(agg.by_server.items()):
+        lines.append(
+            f"▫️ {sname}: {gb:g} گیگ | {cnt} سفارش | {format_money_toman(rev)} تومان"
+        )
+    lines.extend(
+        [
+            "",
+            "👤 کاربران:",
+            f"▫️ خرید کاربران: {agg.user_channel_gb:g} گیگ | {agg.user_channel_orders} سفارش",
+            f"▫️ تحویل ادمین‌ها: {agg.admin_channel_gb:g} گیگ | {agg.admin_channel_orders} مورد",
+        ]
+    )
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("adm:sales_report:"), IsManagerOrOwner())
+async def cb_sales_report(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
+    from app.message_format import format_jalali_date_only
+
+    period = callback.data.split(":", 2)[-1]
+    if period == "yesterday":
+        w = window_yesterday(settings)
+        jd = format_jalali_date_only(
+            settings, (datetime.now(tz=UTC) - timedelta(days=1))
+        )
+    elif period == "month":
+        w = window_this_month(settings)
+        jd = format_jalali_date_only(settings, datetime.now(tz=UTC))
+    else:
+        period = "today"
+        w = window_today(settings)
+        jd = format_jalali_date_only(settings, datetime.now(tz=UTC))
+    agg = await aggregate_sales(session, start_utc=w.start_utc, end_utc=w.end_utc)
+    body = _render_sales_report_text(
+        settings, agg, period=period, window_label=w.label_fa, jalali_date=jd
+    )
+    await callback.message.edit_text(
+        _afmt(settings, body),
+        reply_markup=_sales_report_keyboard(period),
+    )
     await callback.answer()
 
 

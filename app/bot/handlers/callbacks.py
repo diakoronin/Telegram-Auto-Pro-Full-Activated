@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from aiogram import F, Router
@@ -12,6 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import texts_fa as T
 from app.bot.states import AdminStates
 from app.db.models import Admin, AdminRole, User
+from app.config import Settings
+from app.message_format import (
+    format_jalali_datetime,
+    format_message,
+    format_money_toman,
+)
 from app.services.audit import write_audit
 from app.services.payments import approve_payment_request
 
@@ -24,6 +31,7 @@ router = Router(name="callbacks")
 async def cb_approve_payment(
     callback: CallbackQuery,
     session: AsyncSession,
+    settings: Settings,
     after_commit: list,
     admin: Admin | None = None,
     **kwargs: Any,
@@ -39,7 +47,9 @@ async def cb_approve_payment(
         )
         return
     pr_id = int(callback.data.split(":", 1)[1])
-    pr, err = await approve_payment_request(session, request_id=pr_id, reviewer=admin)
+    pr, before, after, err = await approve_payment_request(
+        session, request_id=pr_id, reviewer=admin
+    )
     if err or pr is None:
         await callback.answer(err or T.GENERIC_ERROR, show_alert=True)
         return
@@ -56,9 +66,29 @@ async def cb_approve_payment(
     bot = callback.bot
 
     async def _notify() -> None:
-        if user_tid:
+        if user_tid and before is not None and after is not None:
             try:
-                await bot.send_message(user_tid, T.PAYMENT_APPROVED_USER)
+                when = format_jalali_datetime(settings, datetime.now(tz=UTC))
+                body = T.PAYMENT_APPROVED_USER_HTML.format(
+                    pr_id=pr_id,
+                    amount=format_money_toman(int(pr.amount)),
+                    before=format_money_toman(int(before)),
+                    after=format_money_toman(int(after)),
+                    when=when,
+                )
+                kb = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text=T.BTN_SHOP, callback_data="shop")],
+                        [InlineKeyboardButton(text=T.BTN_WALLET, callback_data="wallet")],
+                        [InlineKeyboardButton(text=T.BTN_MENU_HOME, callback_data="main_menu")],
+                    ]
+                )
+                await bot.send_message(
+                    user_tid,
+                    format_message(settings, body),
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                )
             except Exception:
                 logger.exception("notify user approve failed")
 
