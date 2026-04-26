@@ -56,6 +56,15 @@ Prereq: PostgreSQL recommended; set `PUBLIC_BASE_URL`, bind subscription port, c
 - [ ] Hourly backup: owner receives zip in private chat when `AUTO_BACKUP_ENABLED=true`.
 - [ ] `python3 tests/test_quota_calc.py` — local quota math (no network).
 
+## Automated tests (no real panels)
+
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest tests -q
+```
+
+Live Marzban/3x-ui API checks are documented separately as **Needs real credentials**.
+
 ## bot-manager.sh
 
-- [ ] Run `./bot-manager.sh` from repo root; menu appears; option 8 curls `/health`.
+- [ ] Run `sudo ./bot-manager.sh` from repo root; menu 0–35; option 23/35 curls `/health`; option 12 writes `backups/manual_*.zip`.

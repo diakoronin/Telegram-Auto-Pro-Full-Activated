@@ -1,6 +1,15 @@
 from aiogram import Router
 
-from app.bot.handlers import admin, admin_panel_commands, admin_tickets, callbacks, card_access, fallback, user
+from app.bot.handlers import (
+    admin,
+    admin_location_requests,
+    admin_panel_commands,
+    admin_tickets,
+    callbacks,
+    card_access,
+    fallback,
+    user,
+)
 
 
 def setup_routers() -> Router:
@@ -14,6 +23,7 @@ def setup_routers() -> Router:
     root.include_router(card_access.router)
     root.include_router(admin.router)
     root.include_router(admin_tickets.router)
+    root.include_router(admin_location_requests.router)
     root.include_router(admin_panel_commands.router)
     root.include_router(callbacks.router)
     # Catch-all last: unknown text/commands and unknown callback_data.

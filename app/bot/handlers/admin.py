@@ -36,11 +36,16 @@ from app.db.models import (
     AdminRole,
     Link,
     LinkStatus,
+    LocationChangeRequest,
+    LocationChangeRequestStatus,
     PaymentCard,
     Plan,
     Purchase,
     Server,
+    SupportTicket,
+    SupportTicketStatus,
     User,
+    UserService,
 )
 from app.services.audit import write_audit
 from app.services.backup import export_full_backup_bytes, write_temp_backup_file
@@ -61,9 +66,21 @@ from app.services.stock import get_all_servers_stock_summary, get_server_stock_s
 from app.services.users import get_admin_by_telegram
 from app.services.cards import card_display_number
 from app.services.stock_alerts import run_stock_check_after_commit
+from app.services.admin_traffic_status import build_traffic_sync_status_text
+from app.services.app_settings import KEY_LEGACY_LINK_ADMIN, get_setting
 from app.services.owner_backup import send_backup_to_owner
-from app.services.sales_csv import export_purchases_csv
-from app.services.wallet import manual_adjust_wallet, refund_purchase
+from app.services.reports_aggregate import (
+    aggregate_payments_approved,
+    count_user_services_by_status,
+)
+from app.services.sales_csv import (
+    export_daily_report_csv,
+    export_payments_csv,
+    export_purchases_csv,
+    export_services_csv,
+)
+from app.services.traffic_sync import run_traffic_sync_cycle
+from app.services.wallet import deduct_location_change_fee, manual_adjust_wallet, refund_purchase
 from app.validation import (
     ValidationError,
     validate_bank_name,
@@ -91,11 +108,39 @@ def _afmt(settings: Settings, text: str) -> str:
     return format_message(settings, text)
 
 
-def _admin_root_kb(admin: Admin) -> InlineKeyboardMarkup:
+LEGACY_DISABLED_MSG = "این بخش در نسخه جدید غیرفعال است."
+
+
+async def _admin_root_kb_async(
+    session: AsyncSession, admin: Admin, settings: Settings
+) -> InlineKeyboardMarkup:
+    leg = await _legacy_manual_allowed(session, settings)
+    return _admin_root_kb(admin, legacy_manual=leg)
+
+
+async def _legacy_manual_allowed(session: AsyncSession, settings: Settings) -> bool:
+    if settings.legacy_manual_mode:
+        return True
+    v = await get_setting(session, KEY_LEGACY_LINK_ADMIN, "")
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _admin_root_kb(admin: Admin, *, legacy_manual: bool = False) -> InlineKeyboardMarkup:
     if admin.role == AdminRole.SELLER:
+        if legacy_manual:
+            return InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 تحویل دستی لینک", callback_data="adm:manual")],
+                ]
+            )
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🛒 تحویل دستی لینک", callback_data="adm:manual")],
+                [
+                    InlineKeyboardButton(
+                        text="🛒 تحویل دستی (غیرفعال)",
+                        callback_data="adm:legacy_blocked",
+                    )
+                ],
             ]
         )
     rows = [
@@ -110,16 +155,20 @@ def _admin_root_kb(admin: Admin) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _kb_cat_sales() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=T.ADM_SRV_PLANS, callback_data="adm:plans")],
-            [InlineKeyboardButton(text=T.ADM_LINK_MGMT, callback_data="adm:link_menu")],
-            [InlineKeyboardButton(text=T.ADM_MANUAL, callback_data="adm:manual")],
-            [InlineKeyboardButton(text=T.ADM_STOCK_ALL, callback_data="adm:stock_all")],
-            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="admin_home")],
-        ]
-    )
+def _kb_cat_sales(*, legacy_manual: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text=T.ADM_SRV_PLANS, callback_data="adm:plans")],
+    ]
+    if legacy_manual:
+        rows.extend(
+            [
+                [InlineKeyboardButton(text=T.ADM_LINK_MGMT, callback_data="adm:link_menu")],
+                [InlineKeyboardButton(text=T.ADM_MANUAL, callback_data="adm:manual")],
+                [InlineKeyboardButton(text=T.ADM_STOCK_ALL, callback_data="adm:stock_all")],
+            ]
+        )
+    rows.append([InlineKeyboardButton(text=T.ADM_BACK, callback_data="admin_home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _kb_cat_users(admin: Admin) -> InlineKeyboardMarkup:
@@ -150,6 +199,16 @@ def _kb_cat_mgmt(admin: Admin) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 text="📊 گزارش فروش امروز", callback_data="adm:sales_report:today"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📡 وضعیت سینک مصرف", callback_data="adm:traffic_sync_status"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🌍 درخواست‌های لوکیشن", callback_data="adm:locreqs"
             )
         ],
         [InlineKeyboardButton(text=T.ADM_REPORTS, callback_data="adm:backup_menu")],
@@ -217,16 +276,29 @@ async def cb_goto_user_menu(
 
 
 @router.callback_query(F.data == "adm:cat_sales", IsManagerOrOwner())
-async def cb_cat_sales(callback: CallbackQuery, settings: Settings) -> None:
+async def cb_cat_sales(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    leg = await _legacy_manual_allowed(session, settings)
     await callback.message.edit_text(
         _afmt(settings, "📦 فروش و موجودی"),
-        reply_markup=_kb_cat_sales(),
+        reply_markup=_kb_cat_sales(legacy_manual=leg),
     )
     await callback.answer()
 
 
+@router.callback_query(F.data == "adm:legacy_blocked", IsAdmin())
+async def cb_legacy_blocked(callback: CallbackQuery) -> None:
+    await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+
+
 @router.callback_query(F.data == "adm:link_menu", IsManagerOrOwner())
-async def cb_link_menu(callback: CallbackQuery, settings: Settings) -> None:
+async def cb_link_menu(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+        return
     await callback.message.edit_text(
         _afmt(settings, "🔗 مدیریت لینک‌ها"),
         reply_markup=_kb_link_menu(),
@@ -262,6 +334,9 @@ async def cb_settings_stub(callback: CallbackQuery, settings: Settings) -> None:
 
 @router.callback_query(F.data == "adm:stock_all", IsManagerOrOwner())
 async def cb_stock_all(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+        return
     summary = await get_all_servers_stock_summary(session)
     if not summary:
         text = T.EMPTY_NO_SERVERS
@@ -329,7 +404,10 @@ async def cmd_admin(message: Message, session: AsyncSession, admin: Admin, setti
         target_id=str(admin.id),
     )
     intro = f"{T.ADMIN_PANEL_TITLE}\n\n{T.ADMIN_PANEL_INTRO}"
-    await message.answer(_afmt(settings, intro), reply_markup=_admin_root_kb(admin))
+    await message.answer(
+        _afmt(settings, intro),
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
+    )
 
 
 @router.callback_query(F.data == "adm:owner_backup", IsOwner())
@@ -350,21 +428,31 @@ async def cb_owner_backup_now(
 
 
 @router.callback_query(F.data == "admin_home")
-async def cb_admin_home(callback: CallbackQuery, admin: Admin, settings: Settings) -> None:
+async def cb_admin_home(
+    callback: CallbackQuery, session: AsyncSession, admin: Admin, settings: Settings
+) -> None:
     intro = f"{T.ADMIN_PANEL_TITLE}\n\n{T.ADMIN_PANEL_INTRO}"
     await callback.message.edit_text(
-        _afmt(settings, intro), reply_markup=_admin_root_kb(admin)
+        _afmt(settings, intro),
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data == "admin_cancel_fsm")
 async def cb_admin_cancel_fsm(
-    callback: CallbackQuery, state: FSMContext, admin: Admin, settings: Settings
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    admin: Admin,
+    settings: Settings,
 ) -> None:
     await state.clear()
     intro = f"{T.ADMIN_PANEL_TITLE}\n\n{T.ADMIN_PANEL_INTRO}"
-    await callback.message.answer(_afmt(settings, intro), reply_markup=_admin_root_kb(admin))
+    await callback.message.answer(
+        _afmt(settings, intro),
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
+    )
     await callback.answer()
 
 
@@ -380,23 +468,28 @@ async def cb_plans(callback: CallbackQuery, session: AsyncSession, settings: Set
             [InlineKeyboardButton(text=f"🌐 {s.name}", callback_data=f"adm:srv:{s.id}")]
             for s in rows
         ]
-    kb.extend(
+    leg = await _legacy_manual_allowed(session, settings)
+    extra = [
+        [InlineKeyboardButton(text="➕ افزودن سرور", callback_data="adm:add_srv")],
+        [InlineKeyboardButton(text="➕ افزودن پلن", callback_data="adm:add_plan_menu")],
         [
-            [InlineKeyboardButton(text="➕ افزودن سرور", callback_data="adm:add_srv")],
-            [InlineKeyboardButton(text="➕ افزودن پلن", callback_data="adm:add_plan_menu")],
-            [
-                InlineKeyboardButton(
-                    text="🚫 غیرفعال‌سازی پلن", callback_data="adm:deact_plan_menu"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🚫 غیرفعال‌سازی سرور", callback_data="adm:deact_srv_menu"
-                )
-            ],
-            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_sales")],
-        ]
-    )
+            InlineKeyboardButton(
+                text="🚫 غیرفعال‌سازی پلن", callback_data="adm:deact_plan_menu"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🚫 غیرفعال‌سازی سرور", callback_data="adm:deact_srv_menu"
+            )
+        ],
+    ]
+    if leg:
+        extra.insert(
+            2,
+            [InlineKeyboardButton(text="📥 افزودن لینک", callback_data="adm:import_menu")],
+        )
+    extra.append([InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_sales")])
+    kb.extend(extra)
     await callback.message.edit_text(
         _afmt(settings, text), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
     )
@@ -427,16 +520,20 @@ async def cb_server_detail(
         + "\n".join(plan_lines)
         + f"\n\n📌 مجموع موجودی این سرور: {sum_unused} عدد"
     )
-    kb = [
-        [InlineKeyboardButton(text="➕ افزودن پلن", callback_data=f"adm:pick_srv:{sid}")],
-        [InlineKeyboardButton(text="📥 افزودن لینک", callback_data="adm:import_menu")],
+    leg = await _legacy_manual_allowed(session, settings)
+    kb = [[InlineKeyboardButton(text="➕ افزودن پلن", callback_data=f"adm:pick_srv:{sid}")]]
+    if leg:
+        kb.append([InlineKeyboardButton(text="📥 افزودن لینک", callback_data="adm:import_menu")])
+    kb.extend(
         [
-            InlineKeyboardButton(
-                text="📊 گزارش کامل موجودی", callback_data=f"adm:srv_stock_rpt:{sid}"
-            )
-        ],
-        [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:plans")],
-    ]
+            [
+                InlineKeyboardButton(
+                    text="📊 گزارش کامل موجودی", callback_data=f"adm:srv_stock_rpt:{sid}"
+                )
+            ],
+            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:plans")],
+        ]
+    )
     await callback.message.edit_text(
         _afmt(settings, body), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
     )
@@ -576,7 +673,12 @@ async def cb_deact_srv_confirm(
 
 
 @router.callback_query(F.data == "adm:del_unused_menu", IsManagerOrOwner())
-async def cb_del_unused_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+async def cb_del_unused_menu(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+        return
     rows = (
         await session.execute(
             select(Server, Plan)
@@ -608,7 +710,11 @@ async def cb_del_unused_menu(callback: CallbackQuery, session: AsyncSession) -> 
 async def cb_del_unused_confirm(
     callback: CallbackQuery,
     session: AsyncSession,
+    settings: Settings,
 ) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+        return
     _, _, sid_s, pid_s = callback.data.split(":")
     sid, pid = int(sid_s), int(pid_s)
     cid = await create_confirmation(
@@ -636,7 +742,12 @@ async def cb_del_unused_confirm(
 
 
 @router.callback_query(F.data == "adm:ret_link_start", IsManagerOrOwner())
-async def cb_ret_link_start(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_ret_link_start(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, settings: Settings
+) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+        return
     await state.set_state(AdminStates.return_link_id)
     await callback.message.answer(
         "شناسه لینک (link id) را بفرستید:",
@@ -751,6 +862,7 @@ async def msg_add_server(
     state: FSMContext,
     session: AsyncSession,
     admin: Admin,
+    settings: Settings,
 ) -> None:
     try:
         name = validate_server_name(message.text or "")
@@ -769,7 +881,10 @@ async def msg_add_server(
         target_id=str(s.id),
     )
     await state.clear()
-    await message.answer(f"سرور #{s.id} ایجاد شد.", reply_markup=_admin_root_kb(admin))
+    await message.answer(
+        f"سرور #{s.id} ایجاد شد.",
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
+    )
 
 
 @router.callback_query(F.data == "adm:add_plan_menu", IsManagerOrOwner())
@@ -836,6 +951,7 @@ async def msg_plan_price(
     state: FSMContext,
     session: AsyncSession,
     admin: Admin,
+    settings: Settings,
 ) -> None:
     data = await state.get_data()
     sid = int(data.get("plan_server_id") or 0)
@@ -865,11 +981,22 @@ async def msg_plan_price(
         target_id=str(p.id),
     )
     await state.clear()
-    await message.answer(f"پلن #{p.id} ایجاد شد.", reply_markup=_admin_root_kb(admin))
+    await message.answer(
+        f"پلن #{p.id} ایجاد شد.",
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
+    )
 
 
 @router.callback_query(F.data == "adm:manual")
-async def cb_manual(callback: CallbackQuery, session: AsyncSession, admin: Admin) -> None:
+async def cb_manual(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    admin: Admin,
+    settings: Settings,
+) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+        return
     rows = (
         await session.execute(
             select(Server, Plan)
@@ -924,6 +1051,10 @@ async def msg_manual_customer(
     settings: Settings,
     after_commit: list,
 ) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await state.clear()
+        await message.answer(LEGACY_DISABLED_MSG)
+        return
     data = await state.get_data()
     sid = int(data["md_server_id"])
     pid = int(data["md_plan_id"])
@@ -974,7 +1105,7 @@ async def msg_manual_customer(
     await message.answer(
         format_message(settings, body),
         parse_mode="HTML",
-        reply_markup=_admin_root_kb(admin),
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
     )
     bot = message.bot
 
@@ -987,7 +1118,12 @@ async def msg_manual_customer(
 
 
 @router.callback_query(F.data == "adm:import_menu", IsManagerOrOwner())
-async def cb_import_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+async def cb_import_menu(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+        return
     rows = (
         await session.execute(
             select(Server, Plan)
@@ -1014,7 +1150,12 @@ async def cb_import_menu(callback: CallbackQuery, session: AsyncSession) -> None
 
 
 @router.callback_query(F.data.startswith("adm:im:"), IsManagerOrOwner())
-async def cb_import_pick(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_import_pick(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, settings: Settings
+) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await callback.answer(LEGACY_DISABLED_MSG, show_alert=True)
+        return
     _, _, sid_s, pid_s = callback.data.split(":")
     await state.update_data(import_server_id=int(sid_s), import_plan_id=int(pid_s))
     await state.set_state(AdminStates.import_links_paste)
@@ -1050,6 +1191,10 @@ async def _finalize_link_import(
     *,
     source: str,
 ) -> None:
+    if not await _legacy_manual_allowed(session, settings):
+        await state.clear()
+        await message.answer(LEGACY_DISABLED_MSG)
+        return
     ok = await consume_rate(
         session,
         key=f"admin_import:{admin.telegram_id}",
@@ -1223,6 +1368,7 @@ async def cb_cards(callback: CallbackQuery, session: AsyncSession, settings: Set
 
 def _payment_card_detail_markup(c: PaymentCard) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    full_ok = bool((c.card_number_full or "").strip()) and len((c.card_number_full or "").strip()) >= 16
     if c.is_active:
         rows.append(
             [
@@ -1236,6 +1382,15 @@ def _payment_card_detail_markup(c: PaymentCard) -> InlineKeyboardMarkup:
                 ),
             ]
         )
+        if not full_ok:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="✏️ تکمیل شماره کارت",
+                        callback_data=f"adm:card_repair:{c.id}",
+                    )
+                ]
+            )
         rows.append(
             [
                 InlineKeyboardButton(
@@ -1324,6 +1479,59 @@ async def cb_card_deact_ask(callback: CallbackQuery, session: AsyncSession) -> N
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("adm:card_repair:"), IsOwner())
+async def cb_card_repair_start(callback: CallbackQuery, state: FSMContext) -> None:
+    cid = int(callback.data.split(":")[-1])
+    await state.update_data(repair_card_id=cid)
+    await state.set_state(AdminStates.repair_card_number)
+    await callback.message.answer(
+        "شماره کارت کامل ۱۶ رقمی را وارد کنید:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="لغو", callback_data="admin_cancel_fsm")]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.repair_card_number, F.text)
+async def msg_repair_card_number(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin: Admin,
+    settings: Settings,
+) -> None:
+    try:
+        num = validate_card_number(message.text or "")
+    except ValidationError as e:
+        await message.answer(e.message_fa)
+        return
+    data = await state.get_data()
+    cid = int(data.get("repair_card_id") or 0)
+    c = await session.get(PaymentCard, cid)
+    if c is None or not c.is_active:
+        await message.answer("کارت نامعتبر است.")
+        await state.clear()
+        return
+    c.card_number_full = num
+    c.card_number_masked = num[:4] + "****" + num[-4:]
+    await write_audit(
+        session,
+        actor_telegram_id=message.from_user.id,
+        actor_role=admin.role.value,
+        action="card_number_repaired",
+        target_type="payment_card",
+        target_id=str(cid),
+    )
+    await state.clear()
+    await message.answer(
+        "شماره کارت ذخیره شد.",
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
+    )
+
+
 @router.callback_query(F.data.startswith("adm:card_edit:"), IsOwner())
 async def cb_card_edit_start(callback: CallbackQuery, state: FSMContext) -> None:
     cid = int(callback.data.split(":")[-1])
@@ -1358,6 +1566,7 @@ async def msg_edit_card_bank(
     state: FSMContext,
     session: AsyncSession,
     admin: Admin,
+    settings: Settings,
 ) -> None:
     try:
         b = validate_bank_name(message.text or "")
@@ -1382,7 +1591,10 @@ async def msg_edit_card_bank(
         target_id=str(cid),
     )
     await state.clear()
-    await message.answer("کارت به‌روزرسانی شد.", reply_markup=_admin_root_kb(admin))
+    await message.answer(
+        "کارت به‌روزرسانی شد.",
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
+    )
 
 
 @router.callback_query(F.data == "adm:add_card", IsOwner())
@@ -1429,6 +1641,7 @@ async def msg_card_bank(
     state: FSMContext,
     session: AsyncSession,
     admin: Admin,
+    settings: Settings,
 ) -> None:
     try:
         b = validate_bank_name(message.text or "")
@@ -1456,7 +1669,10 @@ async def msg_card_bank(
         target_id=str(c.id),
     )
     await state.clear()
-    await message.answer("کارت ثبت شد.", reply_markup=_admin_root_kb(admin))
+    await message.answer(
+        "کارت ثبت شد.",
+        reply_markup=await _admin_root_kb_async(session, admin, settings),
+    )
 
 
 @router.callback_query(F.data == "adm:users", IsManagerOrOwner())
@@ -1694,8 +1910,26 @@ def _sales_report_keyboard(period: str) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="📤 خروجی CSV",
-                    callback_data=f"adm:sales_csv:{period}",
+                    text="📤 CSV خریدها",
+                    callback_data=f"adm:sales_csv_purchases:{period}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📤 CSV پرداخت‌ها",
+                    callback_data=f"adm:sales_csv_payments:{period}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📤 CSV سرویس‌ها",
+                    callback_data="adm:sales_csv_services",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📤 CSV خلاصه گزارش",
+                    callback_data=f"adm:sales_csv_summary:{period}",
                 )
             ],
             [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:backup_menu")],
@@ -1710,11 +1944,11 @@ def _render_sales_report_text(
     period: str,
     window_label: str,
     jalali_date: str,
+    pay,
+    svc,
 ) -> str:
     from app.message_format import format_money_toman
 
-    if agg.total_orders == 0:
-        return T.SALES_REPORT_EMPTY
     if period == "today":
         title = "📊 گزارش فروش امروز"
     elif period == "yesterday":
@@ -1729,24 +1963,38 @@ def _render_sales_report_text(
         f"📅 {jalali_date}",
         "⏰ بازهٔ گزارش: " + window_label,
         "",
-        f"📦 مجموع حجم: {agg.total_gb:g} گیگ",
+        f"📦 حجم فروخته‌شده: {agg.total_gb:g} گیگ",
         f"🛒 سفارش‌ها: {agg.total_orders}",
         f"💵 فروش: {format_money_toman(agg.total_revenue)} تومان",
         "",
-        "جزئیات پلن:",
     ]
-    for lbl, (cnt, rev) in sorted(agg.by_plan_label.items()):
-        lines.append(
-            f"▫️ {lbl}: {cnt} | {format_money_toman(rev)} تومان"
-        )
-    lines.append("")
-    lines.append("🌐 سرورها:")
-    for sname, (gb, cnt, rev) in sorted(agg.by_server.items()):
-        lines.append(
-            f"▫️ {sname}: {gb:g} گیگ | {cnt} سفارش | {format_money_toman(rev)} تومان"
-        )
+    if agg.total_orders == 0:
+        lines.append("(در این بازه سفارش تکمیل‌شده‌ای ثبت نشده است.)")
+        lines.append("")
+    else:
+        lines.append("جزئیات پلن:")
+        for lbl, (cnt, rev) in sorted(agg.by_plan_label.items()):
+            lines.append(f"▫️ {lbl}: {cnt} سفارش | {format_money_toman(rev)} تومان")
+        lines.append("")
+        lines.append("🌐 لوکیشن‌ها:")
+        for sname, (gb, cnt, rev) in sorted(agg.by_server.items()):
+            lines.append(
+                f"▫️ {sname}: {gb:g} گیگ | {cnt} سفارش | {format_money_toman(rev)} تومان"
+            )
+        lines.append("")
     lines.extend(
         [
+            "",
+            "💳 پرداخت‌های تاییدشده:",
+            f"▫️ تعداد: {pay.approved_count}",
+            f"▫️ مجموع شارژ کیف پول: {format_money_toman(pay.approved_amount)} تومان",
+            "",
+            "📦 وضعیت سرویس‌ها:",
+            f"🟢 فعال: {svc.active}",
+            f"🟡 محدود شده: {svc.limited}",
+            f"🔴 منقضی: {svc.expired}",
+            f"⚫ غیرفعال: {svc.disabled}",
+            f"❌ خطادار: {svc.error}",
             "",
             "👤 کاربران:",
             f"▫️ خرید کاربران: {agg.user_channel_gb:g} گیگ | {agg.user_channel_orders} سفارش",
@@ -1756,28 +2004,158 @@ def _render_sales_report_text(
     return "\n".join(lines)
 
 
-@router.callback_query(F.data.startswith("adm:sales_csv:"), IsManagerOrOwner())
-async def cb_sales_csv(
+def _sales_window_for_period(settings: Settings, period: str):
+    if period == "yesterday":
+        return window_yesterday(settings)
+    if period == "month":
+        return window_this_month(settings)
+    return window_today(settings)
+
+
+@router.callback_query(
+    F.data.in_(
+        {
+            "adm:sales_csv:today",
+            "adm:sales_csv:yesterday",
+            "adm:sales_csv:month",
+        }
+    ),
+    IsManagerOrOwner(),
+)
+async def cb_sales_csv_legacy(
     callback: CallbackQuery,
     session: AsyncSession,
     settings: Settings,
 ) -> None:
-    period = callback.data.split(":", 2)[-1]
-    if period == "yesterday":
-        w = window_yesterday(settings)
-    elif period == "month":
-        w = window_this_month(settings)
-    else:
-        w = window_today(settings)
+    period = callback.data.split(":")[-1]
+    w = _sales_window_for_period(settings, period)
     csv_s = await export_purchases_csv(session, start_utc=w.start_utc, end_utc=w.end_utc)
-    doc = BufferedInputFile(
-        csv_s.encode("utf-8-sig"), filename=f"sales_{period}.csv"
-    )
+    doc = BufferedInputFile(csv_s.encode("utf-8-sig"), filename=f"purchases_{period}.csv")
     await callback.message.answer_document(
         doc,
-        caption=_afmt(settings, f"خروجی CSV بازه: {w.label_fa}"),
+        caption=_afmt(settings, f"CSV خریدها — {w.label_fa}"),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:sales_csv_purchases:"), IsManagerOrOwner())
+async def cb_sales_csv_purchases(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
+    period = callback.data.split(":")[-1]
+    w = _sales_window_for_period(settings, period)
+    csv_s = await export_purchases_csv(session, start_utc=w.start_utc, end_utc=w.end_utc)
+    doc = BufferedInputFile(csv_s.encode("utf-8-sig"), filename=f"purchases_{period}.csv")
+    await callback.message.answer_document(
+        doc,
+        caption=_afmt(settings, f"CSV خریدها — {w.label_fa}"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:sales_csv_payments:"), IsManagerOrOwner())
+async def cb_sales_csv_payments(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
+    period = callback.data.split(":")[-1]
+    w = _sales_window_for_period(settings, period)
+    csv_s = await export_payments_csv(session, start_utc=w.start_utc, end_utc=w.end_utc)
+    doc = BufferedInputFile(csv_s.encode("utf-8-sig"), filename=f"payments_{period}.csv")
+    await callback.message.answer_document(
+        doc,
+        caption=_afmt(settings, f"CSV پرداخت‌های تاییدشده — {w.label_fa}"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:sales_csv_services", IsManagerOrOwner())
+async def cb_sales_csv_services(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
+    csv_s = await export_services_csv(session)
+    doc = BufferedInputFile(csv_s.encode("utf-8-sig"), filename="services_all.csv")
+    await callback.message.answer_document(
+        doc,
+        caption=_afmt(settings, "CSV وضعیت سرویس‌ها"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:sales_csv_summary:"), IsManagerOrOwner())
+async def cb_sales_csv_summary(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
+    from app.message_format import format_jalali_date_only
+
+    period = callback.data.split(":")[-1]
+    w = _sales_window_for_period(settings, period)
+    if period == "yesterday":
+        jd = format_jalali_date_only(settings, (datetime.now(tz=UTC) - timedelta(days=1)))
+    else:
+        jd = format_jalali_date_only(settings, datetime.now(tz=UTC))
+    csv_s = await export_daily_report_csv(
+        session,
+        start_utc=w.start_utc,
+        end_utc=w.end_utc,
+        jalali_date=jd,
+        window_label=w.label_fa,
+    )
+    doc = BufferedInputFile(csv_s.encode("utf-8-sig"), filename=f"report_summary_{period}.csv")
+    await callback.message.answer_document(
+        doc,
+        caption=_afmt(settings, f"CSV خلاصه — {w.label_fa}"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:traffic_sync_status", IsManagerOrOwner())
+async def cb_traffic_sync_status(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    body = await build_traffic_sync_status_text(session)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 سینک دستی الان", callback_data="adm:traffic_sync_now")],
+            [InlineKeyboardButton(text=T.ADM_BACK, callback_data="adm:cat_mgmt")],
+        ]
+    )
+    await callback.message.edit_text(_afmt(settings, body), reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm:traffic_sync_now", IsManagerOrOwner())
+async def cb_traffic_sync_now(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+    after_commit: list,
+) -> None:
+    bot = callback.bot
+
+    async def _run() -> None:
+        from app.db.base import get_session_factory
+
+        fac = get_session_factory(settings.database_url)
+        async with fac() as s2:
+            r = await run_traffic_sync_cycle(s2, settings, bot=bot)
+            await s2.commit()
+        await callback.message.answer(
+            _afmt(
+                settings,
+                f"✅ سینک دستی انجام شد.\nپردازش‌شده: {r.get('processed', 0)}\nخطا: {r.get('errors', 0)}",
+            )
+        )
+
+    after_commit.append(_run)
+    await callback.answer("در حال اجرا…")
 
 
 @router.callback_query(F.data.startswith("adm:sales_report:"), IsManagerOrOwner())
@@ -1802,8 +2180,16 @@ async def cb_sales_report(
         w = window_today(settings)
         jd = format_jalali_date_only(settings, datetime.now(tz=UTC))
     agg = await aggregate_sales(session, start_utc=w.start_utc, end_utc=w.end_utc)
+    pay = await aggregate_payments_approved(session, start_utc=w.start_utc, end_utc=w.end_utc)
+    svc = await count_user_services_by_status(session)
     body = _render_sales_report_text(
-        settings, agg, period=period, window_label=w.label_fa, jalali_date=jd
+        settings,
+        agg,
+        period=period,
+        window_label=w.label_fa,
+        jalali_date=jd,
+        pay=pay,
+        svc=svc,
     )
     await callback.message.edit_text(
         _afmt(settings, body),

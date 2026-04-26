@@ -117,6 +117,81 @@ async def _migrate_postgresql(conn: AsyncConnection) -> None:
     except Exception as e:
         logger.debug("migrate_schema admins index: %s", e)
 
+    for stmt in (
+        "ALTER TABLE panels ADD COLUMN IF NOT EXISTS traffic_sync_fail_streak INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE panels ADD COLUMN IF NOT EXISTS last_traffic_sync_at TIMESTAMPTZ",
+        "ALTER TABLE panels ADD COLUMN IF NOT EXISTS last_traffic_sync_ok BOOLEAN",
+        "ALTER TABLE panels ADD COLUMN IF NOT EXISTS last_traffic_sync_error TEXT",
+        "ALTER TABLE panel_accounts ADD COLUMN IF NOT EXISTS last_sync_ok BOOLEAN",
+        "ALTER TABLE panel_accounts ADD COLUMN IF NOT EXISTS sync_fail_streak INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE panel_accounts ADD COLUMN IF NOT EXISTS last_sync_error TEXT",
+        "ALTER TABLE user_services ADD COLUMN IF NOT EXISTS traffic_sync_fail_streak INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE user_services ADD COLUMN IF NOT EXISTS last_traffic_sync_at TIMESTAMPTZ",
+        "ALTER TABLE user_services ADD COLUMN IF NOT EXISTS last_traffic_sync_ok BOOLEAN",
+        "ALTER TABLE user_services ADD COLUMN IF NOT EXISTS last_traffic_sync_error TEXT",
+    ):
+        try:
+            await conn.execute(text(stmt))
+        except Exception as e:
+            logger.warning("migrate_schema PG column warn: %s | %s", e, stmt[:80])
+
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS location_change_requests (
+              id SERIAL PRIMARY KEY,
+              user_service_id INTEGER NOT NULL REFERENCES user_services(id),
+              user_id INTEGER NOT NULL REFERENCES users(id),
+              target_server_id INTEGER NOT NULL REFERENCES servers(id),
+              status VARCHAR(32) NOT NULL DEFAULT 'pending',
+              fee_amount BIGINT NOT NULL DEFAULT 0,
+              wallet_transaction_id INTEGER REFERENCES wallet_transactions(id),
+              request_id VARCHAR(32),
+              admin_note TEXT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+    try:
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_location_change_requests_status ON location_change_requests (status)")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_location_change_requests_user_service "
+                "ON location_change_requests (user_service_id)"
+            )
+        )
+    except Exception as e:
+        logger.warning("migrate_schema location_change_requests index: %s", e)
+
+    await conn.execute(
+        text(
+            """
+            DO $migration$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'wallettransactiontype') THEN
+                IF NOT EXISTS (
+                  SELECT 1 FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid
+                  WHERE t.typname = 'wallettransactiontype' AND e.enumlabel = 'location_change_fee'
+                ) THEN
+                  ALTER TYPE wallettransactiontype ADD VALUE 'location_change_fee';
+                END IF;
+                IF NOT EXISTS (
+                  SELECT 1 FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid
+                  WHERE t.typname = 'wallettransactiontype' AND e.enumlabel = 'location_change_fee_refund'
+                ) THEN
+                  ALTER TYPE wallettransactiontype ADD VALUE 'location_change_fee_refund';
+                END IF;
+              END IF;
+            END
+            $migration$;
+            """
+        )
+    )
+
 
 async def _migrate_sqlite(conn: AsyncConnection) -> None:
     async def cols(table: str) -> set[str]:
@@ -257,3 +332,64 @@ async def _migrate_sqlite(conn: AsyncConnection) -> None:
             )
     except Exception:
         pass
+
+    try:
+        pcols = await cols("panels")
+        if pcols:
+            for col, typ in (
+                ("traffic_sync_fail_streak", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_traffic_sync_at", "DATETIME"),
+                ("last_traffic_sync_ok", "BOOLEAN"),
+                ("last_traffic_sync_error", "TEXT"),
+            ):
+                if col not in pcols:
+                    await conn.execute(text(f"ALTER TABLE panels ADD COLUMN {col} {typ}"))
+    except Exception:
+        pass
+
+    try:
+        pacols = await cols("panel_accounts")
+        if pacols:
+            for col, typ in (
+                ("last_sync_ok", "BOOLEAN"),
+                ("sync_fail_streak", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_sync_error", "TEXT"),
+            ):
+                if col not in pacols:
+                    await conn.execute(text(f"ALTER TABLE panel_accounts ADD COLUMN {col} {typ}"))
+    except Exception:
+        pass
+
+    try:
+        uscols2 = await cols("user_services")
+        if uscols2:
+            for col, typ in (
+                ("traffic_sync_fail_streak", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_traffic_sync_at", "DATETIME"),
+                ("last_traffic_sync_ok", "BOOLEAN"),
+                ("last_traffic_sync_error", "TEXT"),
+            ):
+                if col not in uscols2:
+                    await conn.execute(text(f"ALTER TABLE user_services ADD COLUMN {col} {typ}"))
+    except Exception:
+        pass
+
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS location_change_requests (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_service_id INTEGER NOT NULL REFERENCES user_services(id),
+              user_id INTEGER NOT NULL REFERENCES users(id),
+              target_server_id INTEGER NOT NULL REFERENCES servers(id),
+              status VARCHAR(32) NOT NULL DEFAULT 'pending',
+              fee_amount INTEGER NOT NULL DEFAULT 0,
+              wallet_transaction_id INTEGER REFERENCES wallet_transactions(id),
+              request_id VARCHAR(32),
+              admin_note TEXT,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )

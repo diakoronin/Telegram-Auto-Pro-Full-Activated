@@ -80,6 +80,9 @@ class Settings:
     delete_webhook_drop_pending: bool
     hourly_backup_retention: int
     daily_backup_retention: int
+    backup_retention_hourly: int
+    backup_retention_daily: int
+    legacy_manual_mode: bool
 
 
 def load_settings() -> Settings:
@@ -164,4 +167,13 @@ def load_settings() -> Settings:
         delete_webhook_drop_pending=_bool("DELETE_WEBHOOK_DROP_PENDING", True),
         hourly_backup_retention=max(1, _int("HOURLY_BACKUP_RETENTION", 48)),
         daily_backup_retention=max(1, _int("DAILY_BACKUP_RETENTION", 30)),
+        backup_retention_hourly=max(
+            1,
+            _int("BACKUP_RETENTION_HOURLY", _int("HOURLY_BACKUP_RETENTION", 48)),
+        ),
+        backup_retention_daily=max(
+            1,
+            _int("BACKUP_RETENTION_DAILY", _int("DAILY_BACKUP_RETENTION", 30)),
+        ),
+        legacy_manual_mode=_bool("LEGACY_MANUAL_MODE", False),
     )

@@ -1,4 +1,4 @@
-"""Daily / range sales aggregates (completed purchases, non-refunded)."""
+"""Daily / range sales aggregates via SQL (no full-table Python loops)."""
 
 from __future__ import annotations
 
@@ -6,12 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import case, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.db.models import Delivery, Link, Plan, Purchase, PurchaseStatus, Server
-from app.services.plan_gb import gb_from_plan
 
 
 @dataclass(frozen=True)
@@ -79,8 +78,66 @@ async def aggregate_sales(
     start_utc: datetime,
     end_utc: datetime,
 ) -> SalesAggregate:
-    q = (
-        select(Purchase, Plan, Server)
+    admin_deliv = exists().where(
+        Delivery.purchase_id == Purchase.id,
+        Delivery.channel == "admin_manual",
+    )
+
+    tot = await session.execute(
+        select(
+            func.count().label("c"),
+            func.coalesce(func.sum(Purchase.amount_paid), 0).label("rev"),
+            func.coalesce(func.sum(Plan.volume_gb), 0).label("vgb"),
+            func.coalesce(
+                func.sum(case((admin_deliv, Plan.volume_gb), else_=0)),
+                0,
+            ).label("admin_gb"),
+            func.coalesce(
+                func.sum(case((admin_deliv, 1), else_=0)),
+                0,
+            ).label("admin_cnt"),
+        ).select_from(Purchase).join(Plan, Plan.id == Purchase.plan_id).where(
+            Purchase.status == PurchaseStatus.COMPLETED,
+            Purchase.is_refunded.is_(False),
+            Purchase.created_at >= start_utc,
+            Purchase.created_at <= end_utc,
+        )
+    )
+    trow = tot.one()
+    total_orders = int(trow.c or 0)
+    total_revenue = int(trow.rev or 0)
+    total_gb = float(trow.vgb or 0)
+    admin_gb_p = float(trow.admin_gb or 0)
+    admin_ord_p = int(trow.admin_cnt or 0)
+
+    by_plan_rows = await session.execute(
+        select(
+            func.coalesce(func.nullif(func.trim(Plan.display_name), ""), Plan.name).label("lbl"),
+            func.count().label("cnt"),
+            func.coalesce(func.sum(Purchase.amount_paid), 0).label("rev"),
+        )
+        .select_from(Purchase)
+        .join(Plan, Plan.id == Purchase.plan_id)
+        .where(
+            Purchase.status == PurchaseStatus.COMPLETED,
+            Purchase.is_refunded.is_(False),
+            Purchase.created_at >= start_utc,
+            Purchase.created_at <= end_utc,
+        )
+        .group_by("lbl")
+    )
+    by_plan: dict[str, tuple[int, int]] = {}
+    for lbl, cnt, rev in by_plan_rows:
+        by_plan[str(lbl)] = (int(cnt or 0), int(rev or 0))
+
+    by_srv_rows = await session.execute(
+        select(
+            Server.name.label("sn"),
+            func.coalesce(func.sum(Plan.volume_gb), 0).label("vgb"),
+            func.count().label("cnt"),
+            func.coalesce(func.sum(Purchase.amount_paid), 0).label("rev"),
+        )
+        .select_from(Purchase)
         .join(Plan, Plan.id == Purchase.plan_id)
         .join(Server, Server.id == Purchase.server_id)
         .where(
@@ -89,53 +146,15 @@ async def aggregate_sales(
             Purchase.created_at >= start_utc,
             Purchase.created_at <= end_utc,
         )
+        .group_by(Server.name)
     )
-    rows = (await session.execute(q)).all()
-    pids = [pur.id for pur, _, _ in rows]
-    ch_map: dict[int, str | None] = {}
-    if pids:
-        dr = await session.execute(
-            select(Delivery.purchase_id, Delivery.channel).where(
-                Delivery.purchase_id.in_(pids)
-            )
-        )
-        for pid, ch in dr:
-            if pid not in ch_map:
-                ch_map[pid] = ch
-    total_gb = 0.0
-    total_orders = len(rows)
-    total_revenue = 0
-    by_plan: dict[str, tuple[int, int]] = {}
     by_srv: dict[str, tuple[float, int, int]] = {}
-    user_gb_f = 0.0
-    user_ord_i = 0
-    admin_gb_f = 0.0
-    admin_ord_i = 0
-
-    for pur, pl, srv in rows:
-        del_ch = ch_map.get(pur.id)
-        gb = gb_from_plan(pl)
-        amt = int(pur.amount_paid)
-        total_revenue += amt
-        total_gb += gb
-        lbl = (
-            pl.display_name.strip()
-            if (pl.display_name or "").strip()
-            else pl.name
-        )
-        c, r = by_plan.get(lbl, (0, 0))
-        by_plan[lbl] = (c + 1, r + amt)
-        sg, so, sr = by_srv.get(srv.name, (0.0, 0, 0))
-        by_srv[srv.name] = (sg + gb, so + 1, sr + amt)
-        if del_ch == "admin_manual":
-            admin_gb_f += gb
-            admin_ord_i += 1
-        else:
-            user_gb_f += gb
-            user_ord_i += 1
+    for sn, vgb, cnt, rev in by_srv_rows:
+        by_srv[str(sn)] = (float(vgb or 0), int(cnt or 0), int(rev or 0))
 
     md_q = (
-        select(Delivery, Plan)
+        select(func.coalesce(func.sum(Plan.volume_gb), 0), func.count())
+        .select_from(Delivery)
         .join(Link, Link.id == Delivery.link_id)
         .join(Plan, Plan.id == Link.plan_id)
         .where(
@@ -145,10 +164,14 @@ async def aggregate_sales(
             Delivery.created_at <= end_utc,
         )
     )
-    for _d, pl in (await session.execute(md_q)).all():
-        gb = gb_from_plan(pl)
-        admin_gb_f += gb
-        admin_ord_i += 1
+    md_row = (await session.execute(md_q)).one()
+    admin_gb_extra = float(md_row[0] or 0)
+    admin_ord_extra = int(md_row[1] or 0)
+
+    admin_gb = admin_gb_p + admin_gb_extra
+    admin_ord = admin_ord_p + admin_ord_extra
+    user_gb = max(0.0, total_gb - admin_gb)
+    user_ord = max(0, total_orders - admin_ord)
 
     return SalesAggregate(
         total_gb=total_gb,
@@ -156,8 +179,8 @@ async def aggregate_sales(
         total_revenue=total_revenue,
         by_plan_label=by_plan,
         by_server=by_srv,
-        user_channel_gb=user_gb_f,
-        user_channel_orders=user_ord_i,
-        admin_channel_gb=admin_gb_f,
-        admin_channel_orders=admin_ord_i,
+        user_channel_gb=user_gb,
+        user_channel_orders=user_ord,
+        admin_channel_gb=admin_gb,
+        admin_channel_orders=admin_ord,
     )

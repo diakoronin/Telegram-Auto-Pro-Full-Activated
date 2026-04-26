@@ -23,7 +23,7 @@ from app.db.base import get_session_factory, init_db
 from app import texts_fa as T
 from app.message_format import format_message
 from app.services.owner_backup import send_backup_to_owner
-from app.services.traffic_sync import sync_active_services_batch
+from app.services.traffic_sync import run_traffic_sync_cycle
 from app.structured_log import RequestIdFilter
 from app.subscription_api import create_subscription_app
 
@@ -70,7 +70,7 @@ async def _traffic_loop(bot: Bot, settings) -> None:
         try:
             await asyncio.sleep(settings.traffic_sync_interval_seconds)
             async with factory() as session:
-                await sync_active_services_batch(
+                await run_traffic_sync_cycle(
                     session,
                     settings,
                     bot=bot,
@@ -84,11 +84,12 @@ async def _traffic_loop(bot: Bot, settings) -> None:
 
 
 async def _backup_loop(bot: Bot, settings) -> None:
+    factory = get_session_factory(settings.database_url)
     while True:
         try:
             await asyncio.sleep(settings.auto_backup_interval_minutes * 60)
             if settings.auto_backup_enabled:
-                ok, err = await send_backup_to_owner(bot, settings)
+                ok, err = await send_backup_to_owner(bot, settings, session_factory=factory)
                 if not ok:
                     logger.error("auto backup failed: %s", err)
         except asyncio.CancelledError:

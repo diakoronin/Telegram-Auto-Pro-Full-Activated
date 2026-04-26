@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import PaymentCard
@@ -11,7 +11,12 @@ from app.db.models import PaymentCard
 async def pick_public_card_for_invoice(session: AsyncSession) -> PaymentCard | None:
     r = await session.execute(
         select(PaymentCard)
-        .where(PaymentCard.is_active.is_(True), PaymentCard.is_public.is_(True))
+        .where(
+            PaymentCard.is_active.is_(True),
+            PaymentCard.is_public.is_(True),
+            PaymentCard.card_number_full.is_not(None),
+            func.length(func.trim(PaymentCard.card_number_full)) >= 16,
+        )
         .order_by(PaymentCard.id.asc())
         .limit(1)
     )

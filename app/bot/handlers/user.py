@@ -17,6 +17,9 @@ from app import texts_fa as T
 from app.config import Settings
 from app.db.models import (
     Admin,
+    AdminRole,
+    LocationChangeRequest,
+    LocationChangeRequestStatus,
     PaymentCard,
     PaymentRequest,
     Plan,
@@ -24,6 +27,7 @@ from app.db.models import (
     PurchaseStatus,
     Server,
     SupportTicket,
+    SupportTicketStatus,
     User,
     UserService,
     UserServiceStatus,
@@ -43,6 +47,7 @@ from app.services.cards import (
     pick_public_card_for_invoice,
 )
 from app.services.panel_purchase import purchase_service_via_panel
+from app.services.quota import recompute_user_service_traffic
 from app.services.plan_display import plan_display_label
 from app.services.payments import (
     attach_receipt_to_payment_request,
@@ -53,7 +58,14 @@ from app.services.payments import (
 )
 from app.services.rate_limit import consume_rate
 from app.services.subscription_urls import stable_subscription_url
-from app.services.location_migration import migrate_user_service_location
+from app.services.location_migration import (
+    create_pending_location_request,
+    migrate_user_service_location,
+    user_may_start_location_change_ui,
+    validate_location_change_prereqs,
+)
+from app.services.owner_notify import notify_owner_text
+from app.services.wallet import deduct_location_change_fee, refund_location_change_fee
 from app.structured_log import new_request_id, set_request_id, reset_request_id
 from app.validation import (
     ValidationError,
@@ -91,7 +103,7 @@ def _main_kb(*, card_view_allowed: bool = False) -> InlineKeyboardMarkup:
     ]
     if card_view_allowed:
         rows.append([InlineKeyboardButton(text=T.BTN_CARDS, callback_data="show_cards")])
-    rows.append([InlineKeyboardButton(text=T.BTN_SUPPORT, callback_data="support")])
+    rows.append([InlineKeyboardButton(text=T.BTN_SUPPORT, callback_data="support_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -469,8 +481,18 @@ async def charge_amount(
     card_num = invoice_card_number_for_user(
         card, show_full=settings.show_full_card_number_to_user
     )
-    if "*" in card_num and settings.show_full_card_number_to_user:
-        await message.answer(_fmt(settings, T.INVOICE_CARD_INCOMPLETE))
+    if "*" in card_num or ("*" in (card.card_number_masked or "") and not (card.card_number_full or "").strip()):
+        await cancel_payment_request_by_user(session, pr=pr)
+        await session.flush()
+        try:
+            await message.bot.send_message(
+                settings.owner_telegram_id,
+                "⚠️ فاکتور ساخته نشد: شماره کارت کامل ثبت نشده است. لطفاً کارت را از مدیریت کارت‌ها ویرایش کنید.",
+            )
+        except Exception:
+            logger.exception("owner notify incomplete card")
+        await message.answer(_fmt(settings, T.INVOICE_CARD_INCOMPLETE_ADMIN))
+        await state.clear()
         return
     inv = T.INVOICE_CREATED_HTML.format(
         card_html=format_copyable_code(card_num),
@@ -1135,6 +1157,7 @@ async def cb_user_service_detail(
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
     us, pl, srv = row
+    dbu = await session.get(User, db_user.id)
     srv_n = srv.name if srv else "—"
     total_gb = int(us.total_quota_bytes) / (1024**3)
     used_gb = int(us.used_traffic_bytes) / (1024**3)
@@ -1142,7 +1165,7 @@ async def cb_user_service_detail(
     exp_s = format_jalali_datetime(settings, us.expire_at) if us.expire_at else "—"
     sub_url = stable_subscription_url(settings, us.subscription_token)
     loc_btn = []
-    if settings.location_change_enabled and us.location_change_enabled:
+    if user_may_start_location_change_ui(settings=settings, us=us, user=dbu):
         loc_btn.append(
             InlineKeyboardButton(text=T.BTN_LOCATION_CHANGE, callback_data=f"usloc:{us.id}")
         )
@@ -1193,12 +1216,31 @@ async def cb_location_pick_servers(
         return
     us_id = int(callback.data.split(":", 1)[1])
     us = await session.get(UserService, us_id)
+    urow = await session.get(User, db_user.id)
     if us is None or us.user_id != db_user.id:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    if not user_may_start_location_change_ui(settings=settings, us=us, user=urow):
+        await callback.answer("امکان تغییر لوکیشن برای این سرویس وجود ندارد.", show_alert=True)
         return
     if not settings.location_change_enabled:
         await callback.answer("تغییر لوکیشن غیرفعال است.", show_alert=True)
         return
+    plan = await session.get(Plan, us.plan_id)
+    if plan is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    compat_srv = (
+        select(Server.id)
+        .join(Plan, Plan.server_id == Server.id)
+        .where(
+            Plan.volume_gb == plan.volume_gb,
+            Plan.duration_days == plan.duration_days,
+            Plan.is_active.is_(True),
+            Plan.is_visible_to_users.is_(True),
+        )
+        .distinct()
+    )
     srvs = (
         await session.execute(
             select(Server)
@@ -1208,6 +1250,7 @@ async def cb_location_pick_servers(
                 Server.supports_location_change.is_(True),
                 Server.panel_id.is_not(None),
                 Server.id != us.current_server_id,
+                Server.id.in_(compat_srv),
             )
             .order_by(Server.id)
         )
@@ -1216,7 +1259,7 @@ async def cb_location_pick_servers(
         await callback.answer("سرور دیگری برای انتقال نیست.", show_alert=True)
         return
     kb = [
-        [InlineKeyboardButton(text=s.name, callback_data=f"uslocgo:{us_id}:{s.id}")]
+        [InlineKeyboardButton(text=s.name, callback_data=f"usloccf:{us_id}:{s.id}")]
         for s in srvs
     ]
     kb.append([InlineKeyboardButton(text=T.BTN_BACK, callback_data=f"us:{us_id}")])
@@ -1227,8 +1270,8 @@ async def cb_location_pick_servers(
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("uslocgo:"))
-async def cb_location_confirm_do(
+@router.callback_query(F.data.startswith("usloccf:"))
+async def cb_location_show_confirm(
     callback: CallbackQuery,
     session: AsyncSession,
     settings: Settings,
@@ -1242,14 +1285,181 @@ async def cb_location_confirm_do(
     us_id, tgt_id = int(us_s), int(tgt_s)
     us = await session.get(UserService, us_id)
     tgt = await session.get(Server, tgt_id)
+    urow = await session.get(User, db_user.id)
     if us is None or us.user_id != db_user.id or tgt is None:
         await callback.answer(T.GENERIC_ERROR, show_alert=True)
         return
-    ok, err = await migrate_user_service_location(session, settings=settings, us=us, target_server=tgt)
+    okp, errp = await validate_location_change_prereqs(
+        session, settings=settings, us=us, target_server=tgt, user=urow
+    )
+    if not okp:
+        await callback.answer(errp or "نامعتبر", show_alert=True)
+        return
+    await recompute_user_service_traffic(session, us)
+    rem_gb = max(0, int(us.remaining_traffic_bytes)) / (1024**3)
+    fee = int(settings.location_change_fee or 0)
+    old_srv = await session.get(Server, us.current_server_id)
+    old_n = old_srv.name if old_srv else "—"
+    body = (
+        "🌍 تغییر لوکیشن سرویس\n\n"
+        f"🆔 کد سرویس: {html.escape(us.public_service_code)}\n"
+        f"از: {html.escape(old_n)}\n"
+        f"به: {html.escape(tgt.name)}\n\n"
+        f"📦 حجم باقی‌مانده: {rem_gb:.2f} گیگ\n"
+        f"💵 هزینه تغییر لوکیشن: {format_money_toman(fee)} تومان\n\n"
+        "🔗 لینک اشتراک شما تغییر نمی‌کند.\n"
+        "بعد از تغییر، فقط داخل برنامه Update Subscription بزنید."
+    )
+    kb = [
+        [
+            InlineKeyboardButton(
+                text="✅ تایید تغییر لوکیشن",
+                callback_data=f"uslocgo:{us_id}:{tgt_id}",
+            )
+        ],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data=f"us:{us_id}")],
+    ]
+    await callback.message.edit_text(
+        _fmt(settings, body),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("uslocgo:"))
+async def cb_location_confirm_do(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+    after_commit: list,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    _, us_s, tgt_s = callback.data.split(":", 2)
+    us_id, tgt_id = int(us_s), int(tgt_s)
+    us = await session.get(UserService, us_id)
+    tgt = await session.get(Server, tgt_id)
+    urow = await session.get(User, db_user.id)
+    if us is None or us.user_id != db_user.id or tgt is None or urow is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    okp, errp = await validate_location_change_prereqs(
+        session, settings=settings, us=us, target_server=tgt, user=urow
+    )
+    if not okp:
+        await callback.answer(errp or "نامعتبر", show_alert=True)
+        return
+
+    fee = int(settings.location_change_fee or 0)
+    wt_id: int | None = None
+
+    if settings.location_change_require_admin_approval:
+        req = await create_pending_location_request(
+            session,
+            settings=settings,
+            us=us,
+            user=urow,
+            target_server=tgt,
+        )
+        if fee > 0:
+            wt, errw = await deduct_location_change_fee(
+                session,
+                user=urow,
+                fee=fee,
+                reason=f"location_change_fee_pending_req_{req.id}",
+            )
+            if errw:
+                req.status = LocationChangeRequestStatus.CANCELLED
+                await session.flush()
+                await callback.answer(errw, show_alert=True)
+                return
+            if wt:
+                req.wallet_transaction_id = wt.id
+                wt_id = wt.id
+        await session.flush()
+
+        req_id_local = req.id
+
+        async def _notify_admins() -> None:
+            from app.db.base import get_session_factory
+
+            fac = get_session_factory(settings.database_url)
+            async with fac() as s3:
+                admins = (
+                    await s3.execute(
+                        select(Admin).where(
+                            Admin.is_active.is_(True),
+                            Admin.role.in_((AdminRole.OWNER, AdminRole.MANAGER)),
+                        )
+                    )
+                ).scalars().all()
+            txt = (
+                f"🌍 درخواست تغییر لوکیشن #{req_id_local}\n"
+                f"کاربر: {urow.telegram_id}\n"
+                f"سرویس: {us.public_service_code}\n"
+                f"مقصد: {tgt.name}\n\n"
+                "از پنل مدیریت → مدیریت → درخواست‌های لوکیشن را بررسی کنید."
+            )
+            for a in admins:
+                try:
+                    await callback.bot.send_message(int(a.telegram_id), txt)
+                except Exception:
+                    logger.exception("notify admin loc req")
+
+        after_commit.append(_notify_admins)
+        await callback.answer("درخواست ثبت شد؛ پس از تایید ادمین انجام می‌شود.")
+        callback.data = f"us:{us_id}"
+        await cb_user_service_detail(callback, session, settings, db_user=db_user)
+        return
+
+    if fee > 0:
+        wt, errw = await deduct_location_change_fee(
+            session,
+            user=urow,
+            fee=fee,
+            reason=f"location_change_fee_us_{us_id}",
+        )
+        if errw:
+            await callback.answer(errw, show_alert=True)
+            return
+        if wt:
+            wt_id = wt.id
+
+    ok, err = await migrate_user_service_location(
+        session,
+        settings=settings,
+        us=us,
+        target_server=tgt,
+        bot=callback.bot,
+        fee_amount=fee,
+        fee_wallet_tx_id=wt_id,
+    )
     if not ok:
+        if fee > 0 and wt_id:
+            await refund_location_change_fee(
+                session,
+                user=urow,
+                fee=fee,
+                original_tx_id=wt_id,
+                reason="location_change_failed_refund",
+            )
         await callback.answer(err or "ناموفق", show_alert=True)
         return
     await callback.answer("✅ لوکیشن تغییر کرد.")
+    try:
+        await callback.bot.send_message(
+            int(urow.telegram_id),
+            _fmt(
+                settings,
+                f"✅ لوکیشن سرویس {us.public_service_code} با موفقیت تغییر کرد. لینک اشتراک ثابت است.",
+            ),
+        )
+    except Exception:
+        logger.exception("notify user loc ok")
     callback.data = f"us:{us_id}"
     await cb_user_service_detail(callback, session, settings, db_user=db_user)
 
@@ -1311,8 +1521,8 @@ async def cb_hist_payments(
     await callback.answer()
 
 
-@router.callback_query(F.data == "support")
-async def cb_support(
+@router.callback_query(F.data.in_(("support", "support_menu")))
+async def cb_support_menu(
     callback: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
@@ -1335,16 +1545,134 @@ async def cb_support(
     if not ok:
         await callback.answer(T.RATE_LIMIT, show_alert=True)
         return
+    await state.clear()
+    await state.set_state(SupportStates.menu)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 ارسال پیام عمومی", callback_data="support_general")],
+            [InlineKeyboardButton(text="📦 گزارش مشکل سرویس", callback_data="support_pick_svc_menu")],
+            [InlineKeyboardButton(text="📨 تیکت‌های من", callback_data="supmine:0")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")],
+        ]
+    )
+    await callback.message.edit_text(_fmt(settings, T.SUPPORT_MENU_TITLE), reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "support_general")
+async def cb_support_general(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
     await state.set_state(SupportStates.waiting_message)
+    await state.update_data(support_user_service_id=None)
     uname = settings.support_username
     await callback.message.edit_text(
-        f"پیام خود را برای پشتیبانی ارسال کنید.\n"
-        f"در تلگرام می‌توانید با @{uname} نیز تماس بگیرید.",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="لغو", callback_data="cancel_fsm")]
-            ]
+        _fmt(
+            settings,
+            "پیام عمومی خود را بنویسید:\n"
+            f"در تلگرام می‌توانید با @{uname} نیز تماس بگیرید.",
         ),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="لغو", callback_data="cancel_fsm")]]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "support_pick_svc_menu")
+async def cb_support_pick_svc_menu(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    q = (
+        await session.execute(
+            select(UserService, Plan, Server)
+            .join(Plan, Plan.id == UserService.plan_id)
+            .outerjoin(Server, Server.id == UserService.current_server_id)
+            .where(UserService.user_id == db_user.id)
+            .order_by(UserService.id.desc())
+            .limit(12)
+        )
+    ).all()
+    if not q:
+        await callback.answer("سرویسی برای گزارش نیست.", show_alert=True)
+        return
+    await state.set_state(SupportStates.pick_service)
+    kb = []
+    for us, pl, srv in q:
+        srv_n = srv.name if srv else "—"
+        kb.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{us.public_service_code} — {srv_n}",
+                    callback_data=f"ussup:{us.id}",
+                )
+            ]
+        )
+    kb.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="support_menu")])
+    await callback.message.edit_text(
+        _fmt(settings, "سرویس مورد نظر را انتخاب کنید:"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("supmine:"))
+async def cb_support_my_tickets(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+    db_user: User | None = None,
+    **kwargs: Any,
+) -> None:
+    if db_user is None:
+        await callback.answer(T.GENERIC_ERROR, show_alert=True)
+        return
+    page = int((callback.data or "supmine:0").split(":")[-1])
+    per = 6
+    off = page * per
+    r = await session.execute(
+        select(SupportTicket)
+        .where(SupportTicket.user_id == db_user.id)
+        .order_by(SupportTicket.id.desc())
+        .offset(off)
+        .limit(per + 1)
+    )
+    rows = list(r.scalars().all())
+    has_more = len(rows) > per
+    rows = rows[:per]
+    if not rows:
+        text = "تیکتی ثبت نکرده‌اید."
+    else:
+        lines = []
+        for t in rows:
+            lines.append(f"#{t.id} [{t.status.value}] {t.message[:40]}…")
+        text = "📨 تیکت‌های شما:\n\n" + "\n".join(lines)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"supmine:{page - 1}"))
+    if has_more:
+        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"supmine:{page + 1}"))
+    kb_rows = [nav] if nav else []
+    kb_rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="support_menu")])
+    await callback.message.edit_text(
+        _fmt(settings, text),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
     )
     await callback.answer()
 

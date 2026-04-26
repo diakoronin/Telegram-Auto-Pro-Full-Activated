@@ -57,6 +57,8 @@ class WalletTransactionType(str, enum.Enum):
     PURCHASE = "purchase"
     REFUND = "refund"
     MANUAL_ADJUST = "manual_adjust"
+    LOCATION_CHANGE_FEE = "location_change_fee"
+    LOCATION_CHANGE_FEE_REFUND = "location_change_fee_refund"
 
 
 class UserServiceStatus(str, enum.Enum):
@@ -87,6 +89,14 @@ class SupportTicketStatus(str, enum.Enum):
     OPEN = "open"
     ANSWERED = "answered"
     CLOSED = "closed"
+
+
+class LocationChangeRequestStatus(str, enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
 
 
 class Admin(Base):
@@ -384,6 +394,12 @@ class Panel(Base):
     last_test_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    traffic_sync_fail_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_traffic_sync_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_traffic_sync_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_traffic_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -448,6 +464,12 @@ class UserService(Base):
         DateTime(timezone=True), nullable=True
     )
     current_server_id: Mapped[int | None] = mapped_column(ForeignKey("servers.id"), nullable=True)
+    traffic_sync_fail_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_traffic_sync_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_traffic_sync_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_traffic_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -482,6 +504,9 @@ class PanelAccount(Base):
     total_used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     final_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sync_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    sync_fail_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -558,6 +583,37 @@ class AppSetting(Base):
     value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class LocationChangeRequest(Base):
+    """Pending admin-approved location migration (fee may be held until completion)."""
+
+    __tablename__ = "location_change_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_service_id: Mapped[int] = mapped_column(ForeignKey("user_services.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    target_server_id: Mapped[int] = mapped_column(ForeignKey("servers.id"), nullable=False)
+    status: Mapped[LocationChangeRequestStatus] = mapped_column(
+        Enum(LocationChangeRequestStatus), nullable=False, default=LocationChangeRequestStatus.PENDING
+    )
+    fee_amount: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    wallet_transaction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("wallet_transactions.id"), nullable=True
+    )
+    request_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_location_change_requests_status", "status"),
+        Index("ix_location_change_requests_user_service", "user_service_id"),
     )
 
 

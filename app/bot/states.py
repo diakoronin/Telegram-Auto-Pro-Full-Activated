@@ -8,6 +8,7 @@ class ChargeStates(StatesGroup):
 
 
 class SupportStates(StatesGroup):
+    menu = State()
     pick_service = State()
     waiting_message = State()
 
@@ -25,6 +26,7 @@ class AdminStates(StatesGroup):
     add_card_number = State()
     add_card_holder = State()
     add_card_bank = State()
+    repair_card_number = State()
     wallet_user_id = State()
     wallet_amount = State()
     wallet_reason = State()

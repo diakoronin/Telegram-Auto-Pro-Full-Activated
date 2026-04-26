@@ -128,3 +128,63 @@ async def refund_purchase(
 
     await session.flush()
     return True, None
+
+
+async def deduct_location_change_fee(
+    session: AsyncSession,
+    *,
+    user: User,
+    fee: int,
+    reason: str,
+) -> tuple[WalletTransaction | None, str | None]:
+    if fee <= 0:
+        return None, None
+    r = await session.execute(select(User).where(User.id == user.id).with_for_update())
+    u = r.scalar_one_or_none()
+    if u is None:
+        return None, "کاربر یافت نشد."
+    before = int(u.wallet_balance)
+    if before < fee:
+        return None, "موجودی کیف پول برای پرداخت هزینه کافی نیست."
+    after = before - fee
+    u.wallet_balance = after
+    wt = WalletTransaction(
+        user_id=u.id,
+        type=WalletTransactionType.LOCATION_CHANGE_FEE,
+        amount_delta=-fee,
+        balance_before=before,
+        balance_after=after,
+        reason=reason,
+    )
+    session.add(wt)
+    await session.flush()
+    return wt, None
+
+
+async def refund_location_change_fee(
+    session: AsyncSession,
+    *,
+    user: User,
+    fee: int,
+    original_tx_id: int | None,
+    reason: str,
+) -> None:
+    if fee <= 0:
+        return
+    r = await session.execute(select(User).where(User.id == user.id).with_for_update())
+    u = r.scalar_one()
+    before = int(u.wallet_balance)
+    after = before + fee
+    u.wallet_balance = after
+    session.add(
+        WalletTransaction(
+            user_id=u.id,
+            type=WalletTransactionType.LOCATION_CHANGE_FEE_REFUND,
+            amount_delta=fee,
+            balance_before=before,
+            balance_after=after,
+            reason=reason,
+        )
+    )
+    await session.flush()
+    _ = original_tx_id

@@ -46,6 +46,11 @@ class SellerUserFlowBlockMiddleware(BaseMiddleware):
                 or d == "hist_purchases"
                 or d == "hist_payments"
                 or d == "support"
+                or d == "support_menu"
+                or d == "support_general"
+                or d == "support_pick_svc_menu"
+                or d.startswith("supmine:")
+                or d.startswith("usloccf:")
                 or d == "show_cards"
                 or d == "cancel_fsm"
                 or d.startswith("shop_srv:")
