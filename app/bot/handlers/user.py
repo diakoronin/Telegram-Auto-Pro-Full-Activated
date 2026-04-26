@@ -22,6 +22,7 @@ from app.services.payments import (
     create_payment_request,
 )
 from app.services.rate_limit import consume_rate
+from app.services.stock_alerts import run_stock_check_after_commit
 from app.validation import ValidationError, validate_charge_amount, is_allowed_receipt_content_type
 
 logger = logging.getLogger(__name__)
@@ -323,6 +324,7 @@ async def cb_buy(
     session: AsyncSession,
     db_user: User,
     settings: Settings,
+    after_commit: list,
 ) -> None:
     plan_id = int(callback.data.split(":", 1)[1])
     plan = await session.get(Plan, plan_id)
@@ -369,6 +371,14 @@ async def cb_buy(
             ]
         ),
     )
+    bot = callback.bot
+
+    async def _stock() -> None:
+        await run_stock_check_after_commit(
+            settings.database_url, settings, bot, plan_id=plan_id
+        )
+
+    after_commit.append(_stock)
     await callback.answer()
 
 

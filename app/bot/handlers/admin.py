@@ -41,6 +41,7 @@ from app.services.links import admin_manual_deliver, return_link
 from app.services.rate_limit import consume_rate
 from app.services.payments import reject_payment_request
 from app.services.users import get_admin_by_telegram
+from app.services.stock_alerts import run_stock_check_after_commit
 from app.services.wallet import manual_adjust_wallet, refund_purchase
 from app.validation import (
     ValidationError,
@@ -553,6 +554,8 @@ async def msg_manual_customer(
     state: FSMContext,
     session: AsyncSession,
     admin: Admin,
+    settings: Settings,
+    after_commit: list,
 ) -> None:
     data = await state.get_data()
     sid = int(data["md_server_id"])
@@ -584,8 +587,17 @@ async def msg_manual_customer(
         target_type="link",
         metadata={"plan_id": pid},
     )
+    plan_id_for_stock = int(data["md_plan_id"])
     await state.clear()
     await message.answer(f"لینک:\n{link}", reply_markup=_admin_root_kb(admin))
+    bot = message.bot
+
+    async def _stock() -> None:
+        await run_stock_check_after_commit(
+            settings.database_url, settings, bot, plan_id=plan_id_for_stock
+        )
+
+    after_commit.append(_stock)
 
 
 @router.callback_query(F.data == "adm:import_menu", IsManagerOrOwner())
@@ -638,6 +650,7 @@ async def msg_import_links(
     session: AsyncSession,
     admin: Admin,
     settings: Settings,
+    after_commit: list,
 ) -> None:
     ok = await consume_rate(
         session,
@@ -677,6 +690,14 @@ async def msg_import_links(
         T.IMPORT_RESULT.format(added=added, dup_batch=dup_b, dup_db=dup_db),
         reply_markup=_admin_root_kb(admin),
     )
+    bot = message.bot
+
+    async def _stock() -> None:
+        await run_stock_check_after_commit(
+            settings.database_url, settings, bot, plan_id=pid
+        )
+
+    after_commit.append(_stock)
 
 
 @router.callback_query(F.data == "adm:cards", IsOwner())
@@ -686,10 +707,141 @@ async def cb_cards(callback: CallbackQuery, session: AsyncSession, admin: Admin)
     text = "کارت‌ها:\n" + ("\n".join(lines) if lines else "خالی")
     kb = [
         [InlineKeyboardButton(text="افزودن کارت", callback_data="adm:add_card")],
-        [InlineKeyboardButton(text="بازگشت", callback_data="admin_home")],
     ]
+    for c in cards:
+        if c.is_active:
+            kb.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"کارت #{c.id}",
+                        callback_data=f"adm:card:{c.id}",
+                    )
+                ]
+            )
+    kb.append([InlineKeyboardButton(text="بازگشت", callback_data="admin_home")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:card:"), IsOwner())
+async def cb_card_detail(callback: CallbackQuery, session: AsyncSession) -> None:
+    cid = int(callback.data.split(":")[-1])
+    c = await session.get(PaymentCard, cid)
+    if c is None:
+        await callback.answer("کارت یافت نشد.", show_alert=True)
+        return
+    text = (
+        f"کارت #{c.id}\n"
+        f"شماره: {c.card_number_masked}\n"
+        f"صاحب: {c.card_holder}\n"
+        f"بانک: {c.bank_name}\n"
+        f"وضعیت: {'فعال' if c.is_active else 'غیرفعال'}"
+    )
+    rows = []
+    if c.is_active:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="غیرفعال‌سازی",
+                    callback_data=f"adm:card_deact_ask:{c.id}",
+                ),
+                InlineKeyboardButton(
+                    text="ویرایش نام/بانک",
+                    callback_data=f"adm:card_edit:{c.id}",
+                ),
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="بازگشت به لیست", callback_data="adm:cards")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:card_deact_ask:"), IsOwner())
+async def cb_card_deact_ask(callback: CallbackQuery, session: AsyncSession) -> None:
+    cid = int(callback.data.split(":")[-1])
+    c = await session.get(PaymentCard, cid)
+    if c is None or not c.is_active:
+        await callback.answer("کارت نامعتبر است.", show_alert=True)
+        return
+    conf_id = await create_confirmation(
+        session,
+        admin_telegram_id=callback.from_user.id,
+        action_type="deactivate_card",
+        payload={"action": "deactivate_payment_card", "card_id": cid},
+    )
+    await callback.message.answer(
+        "غیرفعال‌سازی این کارت؟ " + T.CONFIRM_PROMPT,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="تأیید", callback_data=f"acf:{conf_id}"),
+                    InlineKeyboardButton(text="لغو", callback_data="noop"),
+                ]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:card_edit:"), IsOwner())
+async def cb_card_edit_start(callback: CallbackQuery, state: FSMContext) -> None:
+    cid = int(callback.data.split(":")[-1])
+    await state.update_data(edit_card_id=cid)
+    await state.set_state(AdminStates.edit_card_holder)
+    await callback.message.answer(
+        "نام جدید صاحب کارت:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="لغو", callback_data="admin_cancel_fsm")]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.edit_card_holder, F.text)
+async def msg_edit_card_holder(message: Message, state: FSMContext) -> None:
+    try:
+        h = validate_card_holder(message.text or "")
+    except ValidationError as e:
+        await message.answer(e.message_fa)
+        return
+    await state.update_data(edit_card_holder=h)
+    await state.set_state(AdminStates.edit_card_bank)
+    await message.answer("نام جدید بانک:")
+
+
+@router.message(AdminStates.edit_card_bank, F.text)
+async def msg_edit_card_bank(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin: Admin,
+) -> None:
+    try:
+        b = validate_bank_name(message.text or "")
+    except ValidationError as e:
+        await message.answer(e.message_fa)
+        return
+    data = await state.get_data()
+    cid = int(data["edit_card_id"])
+    c = await session.get(PaymentCard, cid)
+    if c is None or not c.is_active:
+        await message.answer("کارت نامعتبر است.")
+        await state.clear()
+        return
+    c.card_holder = str(data["edit_card_holder"])
+    c.bank_name = b
+    await write_audit(
+        session,
+        actor_telegram_id=message.from_user.id,
+        actor_role=admin.role.value,
+        action="card_edited",
+        target_type="payment_card",
+        target_id=str(cid),
+    )
+    await state.clear()
+    await message.answer("کارت به‌روزرسانی شد.", reply_markup=_admin_root_kb(admin))
 
 
 @router.callback_query(F.data == "adm:add_card", IsOwner())
@@ -767,6 +919,7 @@ async def cb_users(callback: CallbackQuery) -> None:
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="بلاک با آیدی عددی تلگرام", callback_data="adm:block_ask")],
+                [InlineKeyboardButton(text="رفع مسدودیت با آیدی تلگرام", callback_data="adm:unblock_ask")],
                 [InlineKeyboardButton(text="بازگشت", callback_data="admin_home")],
             ]
         ),
@@ -787,6 +940,51 @@ async def cb_block_ask(callback: CallbackQuery, state: FSMContext) -> None:
         ),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "adm:unblock_ask", IsManagerOrOwner())
+async def cb_unblock_ask(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminStates.unblock_user_tid)
+    await callback.message.answer(
+        "شناسه عددی تلگرام کاربر برای رفع مسدودیت:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="لغو", callback_data="admin_cancel_fsm")]
+            ]
+        ),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.unblock_user_tid, F.text)
+async def msg_unblock_user_tid(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    try:
+        tid = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("شناسه نامعتبر است.")
+        return
+    cid = await create_confirmation(
+        session,
+        admin_telegram_id=message.from_user.id,
+        action_type="unblock_user",
+        payload={"action": "unblock_user", "telegram_id": tid},
+    )
+    await state.clear()
+    await message.answer(
+        T.CONFIRM_PROMPT,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="رفع مسدودیت", callback_data=f"acf:{cid}"),
+                    InlineKeyboardButton(text="لغو", callback_data="noop"),
+                ]
+            ]
+        ),
+    )
 
 
 @router.message(AdminStates.wallet_user_id, F.text)
@@ -1169,9 +1367,6 @@ async def msg_reject_reason(
     )
 
 
-# Extend cf: handler by registering in same router - we'll use a dedicated module merge.
-# Instead, duplicate cf handling for admin-only actions in admin_callbacks below.
-
 admin_cf_router = Router(name="admin_cf")
 
 
@@ -1253,6 +1448,44 @@ async def cb_confirm_admin_actions(
             target_id=str(u.id) if u else str(tid),
         )
         await callback.answer("انجام شد.")
+        return
+
+    if action == "unblock_user":
+        if admin.role not in (AdminRole.OWNER, AdminRole.MANAGER):
+            await callback.answer(T.UNAUTHORIZED, show_alert=True)
+            return
+        tid = int(payload["telegram_id"])
+        u = (await session.execute(select(User).where(User.telegram_id == tid))).scalar_one_or_none()
+        if u:
+            u.is_blocked = False
+        await write_audit(
+            session,
+            actor_telegram_id=callback.from_user.id,
+            actor_role=admin.role.value,
+            action="user_unblocked",
+            target_type="user",
+            target_id=str(u.id) if u else str(tid),
+        )
+        await callback.answer("رفع مسدودیت انجام شد.")
+        return
+
+    if action == "deactivate_payment_card":
+        if admin.role != AdminRole.OWNER:
+            await callback.answer(T.UNAUTHORIZED, show_alert=True)
+            return
+        card_id = int(payload["card_id"])
+        card = await session.get(PaymentCard, card_id)
+        if card:
+            card.is_active = False
+        await write_audit(
+            session,
+            actor_telegram_id=callback.from_user.id,
+            actor_role=admin.role.value,
+            action="card_deactivated",
+            target_type="payment_card",
+            target_id=str(card_id),
+        )
+        await callback.answer("کارت غیرفعال شد.")
         return
 
     if action == "wallet_adjust":
@@ -1408,6 +1641,14 @@ async def cb_confirm_admin_actions(
             target_id=str(pid),
             metadata={"count": n},
         )
+        bot = callback.bot
+
+        async def _stock_del() -> None:
+            await run_stock_check_after_commit(
+                settings.database_url, settings, bot, plan_id=pid
+            )
+
+        after_commit.append(_stock_del)
         await callback.answer(f"حذف شد: {n}")
         return
 
@@ -1416,6 +1657,8 @@ async def cb_confirm_admin_actions(
             await callback.answer(T.UNAUTHORIZED, show_alert=True)
             return
         lid = int(payload["link_id"])
+        lk = await session.get(Link, lid)
+        plan_id_for_stock = lk.plan_id if lk else 0
         ok, err = await return_link(session, link_id=lid)
         if not ok:
             await callback.answer(err or T.GENERIC_ERROR, show_alert=True)
@@ -1428,6 +1671,15 @@ async def cb_confirm_admin_actions(
             target_type="link",
             target_id=str(lid),
         )
+        bot = callback.bot
+
+        async def _stock_ret() -> None:
+            if plan_id_for_stock:
+                await run_stock_check_after_commit(
+                    settings.database_url, settings, bot, plan_id=plan_id_for_stock
+                )
+
+        after_commit.append(_stock_ret)
         await callback.answer("لینک بازگردانده شد.")
         return
 

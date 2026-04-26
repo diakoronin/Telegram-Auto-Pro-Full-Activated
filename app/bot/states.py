@@ -30,3 +30,6 @@ class AdminStates(StatesGroup):
     return_link_id = State()
     add_admin_tid = State()
     add_admin_role = State()
+    unblock_user_tid = State()
+    edit_card_holder = State()
+    edit_card_bank = State()

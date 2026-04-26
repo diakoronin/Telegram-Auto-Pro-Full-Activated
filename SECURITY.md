@@ -53,6 +53,12 @@ Roles are stored in the `admins` table (`owner`, `manager`, `seller`). The Teleg
 - **Logs**: ship logs to a centralized system; never enable echo of SQL with secrets in production.
 - **Backups**: store exported files encrypted at rest; limit who can read Telegram owner chat history.
 
+## Low stock alerts
+
+- `LOW_STOCK_THRESHOLD` (default from `.env.example`) controls when unused link count triggers a warning.
+- Each `plans` row has `low_stock_rearm`: when stock goes **above** the threshold it becomes `true` (armed). When stock is **at or below** the threshold and the plan is still armed, the bot sends **one** message to active **owner/manager** admins, then sets `low_stock_rearm` to `false` until stock rises above the threshold again.
+- Checks run **after successful commit** (separate short session) so alerts never roll back with a failed purchase.
+
 ## Operational checklist
 
 - [ ] `.env` not in git; `BOT_TOKEN` rotated if leaked  

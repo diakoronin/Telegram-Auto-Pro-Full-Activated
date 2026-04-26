@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -41,6 +42,31 @@ async def init_db(database_url: str) -> None:
     engine = get_engine(database_url)
     async with engine.begin() as conn:
         await conn.run_sync(models.Base.metadata.create_all)
+    await migrate_schema(database_url)
+
+
+async def migrate_schema(database_url: str) -> None:
+    """Lightweight additive migrations for existing SQLite/Postgres DBs."""
+    engine = get_engine(database_url)
+    dialect = engine.dialect.name
+    async with engine.begin() as conn:
+        if dialect == "sqlite":
+            r = await conn.execute(text("PRAGMA table_info(plans)"))
+            cols = {row[1] for row in r.fetchall()}
+            if "low_stock_rearm" not in cols:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE plans ADD COLUMN low_stock_rearm "
+                        "BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
+        elif dialect == "postgresql":
+            await conn.execute(
+                text(
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS low_stock_rearm "
+                    "BOOLEAN NOT NULL DEFAULT false"
+                )
+            )
 
 
 async def session_scope(

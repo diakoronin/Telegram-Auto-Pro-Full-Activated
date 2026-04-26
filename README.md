@@ -15,7 +15,7 @@ pip install -r requirements.txt
 python3 main.py
 ```
 
-The first run creates tables. The Telegram user matching `OWNER_ID` becomes an **owner** admin automatically.
+The first run creates tables and applies lightweight **additive migrations** (for example the `plans.low_stock_rearm` column on existing databases). The Telegram user matching `OWNER_ID` becomes an **owner** admin automatically.
 
 ## Security notes
 
@@ -24,6 +24,7 @@ The first run creates tables. The Telegram user matching `OWNER_ID` becomes an *
 - **Payment approval** uses `FOR UPDATE` on the payment row and refuses non-`pending` states; user notification runs **after** successful commit.
 - **Wallet** changes always append a `wallet_transactions` row with `balance_before` / `balance_after`; balance is constrained non-negative at the DB layer.
 - **Secrets** load only from environment; the bot token is never logged by application code.
+- **Low stock**: when unused links for an active plan drop to `LOW_STOCK_THRESHOLD` or below (after a delivery, import, or delete-unused), **owner and manager** receive one Telegram alert per cycle; restocking above the threshold **re-arms** the next alert.
 
 See [SECURITY.md](SECURITY.md) for the full threat model and deployment checklist.
 
