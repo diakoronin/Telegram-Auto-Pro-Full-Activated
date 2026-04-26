@@ -132,6 +132,18 @@ then
 fi
 
 echo
+echo "--- App startup path (no polling) ---"
+if [[ -f scripts/check_startup.py ]]; then
+  if ! .venv/bin/python scripts/check_startup.py; then
+    echo "[FAIL] Startup simulation failed (import/init_db/dispatcher — see above)"
+    exit 1
+  fi
+  echo "[OK] Startup simulation"
+else
+  echo "[WARN] scripts/check_startup.py missing — skip (old checkout?)"
+fi
+
+echo
 echo "--- Telegram API (getMe) ---"
 if ! .venv/bin/python - <<'PY'
 import asyncio
