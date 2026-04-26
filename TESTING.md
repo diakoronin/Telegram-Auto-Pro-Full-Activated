@@ -14,3 +14,7 @@ python3 -m pytest tests -q
 ## تست زنده پنل
 
 **Needs real credentials** — برای Marzban و 3x-ui باید `DATABASE_URL`، پنل واقعی و توکن/رمز معتبر تنظیم شود؛ این موارد در CI اجرا نمی‌شوند.
+
+## نصب روی سرور (بدون pytest)
+
+برای تست نصب واقعی از GitHub از `README.md` و اسکریپت `install.sh` استفاده کنید (Ubuntu 22.04/24.04، نیاز به `sudo`).
