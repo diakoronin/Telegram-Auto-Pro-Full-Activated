@@ -1,5 +1,25 @@
 # Telegram sales bot (security-first)
 
+## One-liner install (3x-ui style, must be **root**)
+
+Use the branch that exists on GitHub (example: feature branch until merge to `main`):
+
+```bash
+sudo bash <(curl -Ls https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh)
+```
+
+With custom install path and branch:
+
+```bash
+sudo bash <(curl -Ls https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-sales-bot-security-712f/install.sh) /opt/telegram-sales-bot main
+```
+
+Optional: `REPO=org/repo FRESH_DROP_DB=1` before `sudo` (see `scripts/fresh-install.sh`).
+
+After install: `saka-bot status` / `saka-bot update`.
+
+---
+
 Python 3.11+ bot built with **aiogram 3** and **SQLAlchemy 2 (async)**. Wallet charges go through **pending payment requests** with **row-locked approve/reject**; purchases reserve a link with **`SELECT … FOR UPDATE`** (PostgreSQL: **`SKIP LOCKED`**) and update wallet in the **same transaction**.
 
 ## `saka-bot` CLI (server management)
