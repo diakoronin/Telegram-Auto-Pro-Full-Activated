@@ -4,11 +4,11 @@ set -euo pipefail
 INSTALL_DIR="${INSTALL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$INSTALL_DIR"
 if [[ ! -f .env ]]; then
-  echo "ERROR: .env not found in $INSTALL_DIR" >&2
+  echo "ERROR: no .env in $INSTALL_DIR — run the installer or copy .env.example to .env" >&2
   exit 1
 fi
 if [[ ! -d .venv ]]; then
-  echo "ERROR: .venv not found. Run installer or: python3.11 -m venv .venv" >&2
+  echo "ERROR: no .venv in $INSTALL_DIR — run installer or: python3.11 -m venv .venv" >&2
   exit 1
 fi
 set -a

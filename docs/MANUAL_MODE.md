@@ -1,9 +1,7 @@
-# حالت دستی (لینک)
+# Manual mode (links)
 
-- با `MANUAL_MODE_ENABLED=true` منوی ادمین «فروش دستی» قابل استفاده است.
-- پیش‌فرض `ALLOW_USER_MANUAL_PRODUCTS=false` است؛ فروش دستی برای کاربر عادی غیرفعال است.
-- **ایمپورت:** در تلگرام ابتدا «📥 ایمپورت لینک TXT» را بزنید، سپس پیامی با خط اول `شناسه_سرور,شناسه_پلن` و از خط بعد هر خط یک لینک.
-- **تحویل:** پیام با فرمت  
-  `تحویل server_id=1 plan_id=2 tg=123456789`  
-  اگر `tg=0` باشد فقط برای ادمین ارسال می‌شود.
-- لینک‌های استفاده‌شده دوباره استفاده نمی‌شوند.
+- With **`MANUAL_MODE_ENABLED=true`**, admins see the manual sales menu in Telegram.
+- **`ALLOW_USER_MANUAL_PRODUCTS=false`** by default — normal users do not buy manual products.
+- **Import:** in Telegram admin, use manual TXT import — first line: `manual_server_id,manual_plan_id`, then one link per line.
+- **Delivery:** admin flow in the bot picks an unused link (see admin handlers).
+- Used links cannot be reused.

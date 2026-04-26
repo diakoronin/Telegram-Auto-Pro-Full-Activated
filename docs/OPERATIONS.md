@@ -1,19 +1,19 @@
-# عملیات
+# Operations
 
-## لاگ‌ها
+## Logs
 
-- `logs/bot.log` — رویدادهای عمومی
-- `logs/panel_api.log` — درخواست/پاسخ پنل (بدون رمز)
-- `logs/errors.log` — خطاها
+- `logs/bot.log` — general events  
+- `logs/panel_api.log` — panel HTTP (no secrets)  
+- `logs/errors.log` — errors  
 
 ## Health
 
-`GET http://127.0.0.1:8080/health` — وضعیت اتصال به دیتابیس.
+`GET http://127.0.0.1:8080/health` — DB connectivity.
 
-## بکاپ
+## Backups
 
-PostgreSQL + `AUTO_BACKUP_ENABLED` باعث اجرای حلقه بکاپ در پس‌زمینه می‌شود. فایل‌ها در `backups/` با الگوی `hourly_*.sql.gz`.
+With PostgreSQL and `AUTO_BACKUP_ENABLED=true`, the bot can send compressed dumps to `OWNER_ID`. Local files live under `backups/` with hourly/daily retention.
 
-## تداخل پردازش
+## Duplicate process
 
-اگر دو نمونه با یک `BOT_TOKEN` اجرا شود، تلگرام conflict می‌دهد. از `bot-manager.sh` گزینه‌های ۲۴ و ۲۵ استفاده کنید.
+Two instances with the same `BOT_TOKEN` cause Telegram conflicts. Use `sudo sakabot` → option **25**, then restart the service.

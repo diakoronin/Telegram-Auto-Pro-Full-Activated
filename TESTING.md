@@ -1,20 +1,20 @@
-# تست
+# Testing
 
-## اجرا
+## Run
 
 ```bash
 pip install -r requirements-dev.txt
 python3 -m pytest tests -q
 ```
 
-## پوشش
+## Coverage
 
-تست‌های mock بدون پنل واقعی شامل: saga خرید API، خرید 3x-ui در صورت نبود کانفیگ، migration لوکیشن، API اشتراک، فاکتور کارت، کیف پول، ایمپورت/تحویل دستی، محاسبه سهمیه، سینک ترافیک، گزارش CSV ساده، تیکت.
+Mock tests (no live panels): API purchase saga, 3x-ui path without config, location migration, subscription HTTP API, card invoice, wallet double-approval, manual import/delivery, quota math, traffic sync, simple CSV flow, support ticket model.
 
-## تست زنده پنل
+## Live panel tests
 
-**Needs real credentials** — برای Marzban و 3x-ui باید `DATABASE_URL`، پنل واقعی و توکن/رمز معتبر تنظیم شود؛ این موارد در CI اجرا نمی‌شوند.
+**Needs real credentials** — Marzban / 3x-ui need real `DATABASE_URL`, panel URL, and credentials; not run in CI.
 
-## نصب روی سرور (بدون pytest)
+## Server install smoke test
 
-برای تست نصب واقعی از GitHub از `README.md` و اسکریپت `install.sh` استفاده کنید (Ubuntu 22.04/24.04، نیاز به `sudo`).
+Use `install.sh` from GitHub on Ubuntu 22.04/24.04 with `sudo` (see `README.md`).

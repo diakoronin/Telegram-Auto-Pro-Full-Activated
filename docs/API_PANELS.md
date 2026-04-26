@@ -1,17 +1,17 @@
-# پنل‌های API
+# API panels
 
 ## Marzban
 
-- آدرس پایه پنل را در فیلد `base_url` وارد کنید (مثال `https://panel.example.com`).
-- احراز هویت: نام کاربری/رمز ادمین (توکن JWT خودکار گرفته می‌شود) یا `api_token_encrypted` در دیتابیس.
-- پیشوند API پیش‌فرض `/api` است؛ در صورت نیاز با متغیر محیطی `MARZBAN_API_PREFIX` تغییر دهید.
+- Set panel **base_url** (e.g. `https://panel.example.com`).
+- Auth: admin username/password (JWT is obtained automatically) or store encrypted API token in DB.
+- Default API prefix is `/api`; override with env **`MARZBAN_API_PREFIX`** if needed.
 
 ## Sanaei / 3x-ui
 
-- `base_url` آدرس پنل وب است.
-- در صورت استفاده از `web_base_path` در نصب پنل، همان مقدار را در فیلد `web_base_path` ذخیره کنید (بدون اسلش اضافه در ابتدا/انتها مشکلی نیست؛ کد نرمال می‌کند).
-- `inbound_id` روی ردیف پنل یا سرور باید تنظیم شود؛ بدون آن ساخت کاربر ممکن نیست.
+- **base_url** is the web panel URL.
+- If the panel uses **web_base_path**, store it in the panel row (the code normalizes slashes).
+- **inbound_id** must be set on the panel or server row; without it, user creation fails.
 
-## تفاوت با سرویس دستی
+## Manual vs API
 
-سرویس‌های API در جدول `user_services` و با لینک ثابت `/sub/{subscription_token}` هستند. سرویس دستی در `manual_deliveries` است و هرگز در `/sub` برگردانده نمی‌شود.
+API services use `user_services` and stable `/sub/{subscription_token}`. Manual deliveries use `manual_deliveries` and are never returned from `/sub`.

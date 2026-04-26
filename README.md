@@ -1,74 +1,54 @@
-# ربات فروش سرویس VPN (تلگرام) — SakaBot
+# SakaBot — Telegram VPN / service sales bot
 
-ربات فروش با **دو سیستم جدا**: API (Marzban / 3x-ui) و **دستی** (لینک، بدون سهمیهٔ مرکزی).
+Two separate systems: **API** (Marzban / 3x-ui, central quota, stable `/sub/{token}`) and **manual** links (admin delivery, no API quota). **Bot UI strings are Persian**; **installer, logs, and this README are English** for reliable terminals.
 
 ---
 
-## نصب با یک دستور (پیشنهادی)
+## One-line install (recommended)
 
-روی **Ubuntu 22.04 یا 24.04** با کاربر root یا sudo.
-
-**پیشنهادی (با `sudo` خطای `/dev/fd/63` نمی‌گیرید):** اسکریپت را از stdin به bash بدهید:
+Ubuntu **22.04** or **24.04**, as root or with `sudo`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo bash -s --
 ```
 
-نصب با آرگومان (مثلاً فقط به‌روزرسانی):
+Update only:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo bash -s -- --update
 ```
 
-شاخهٔ دیگر برای `git pull` داخل نصب (متغیر محیطی):
+If stdin is the script, the installer reads prompts from **`/dev/tty`**. Do **not** use `sudo bash <(curl …)` (often breaks with `/dev/fd/63`).
+
+Other branch for `git pull` inside the install dir:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo env INSTALL_BRANCH=cursor/telegram-vpn-sales-bot-c6f2 bash -s --
+curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo env INSTALL_BRANCH=mybranch bash -s --
 ```
 
-مسیر نصب سفارشی:
+Custom install path:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo env INSTALL_DIR=/opt/mybot bash -s --
 ```
 
-**جایگزین** اگر به‌صورت root وارد shell شده‌اید (`sudo -i`):
+The installer installs system packages, **Python 3.11**, **PostgreSQL** (`sakabot` user/db), asks **BOT_TOKEN**, **OWNER_ID**, **PUBLIC_BASE_URL**, writes **`.env`**, creates **`.venv`**, runs **migrations**, installs **`sakabot`** systemd unit, starts the bot, and symlinks **`sakabot`** to `/usr/local/bin`.
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh)
-```
+If **`--update`** runs without **`.env`**, the installer will **prompt once** and create `.env` (same questions as first install).
 
-**چرا `sudo bash <(curl …)` گاهی خطا می‌دهد؟** همان مشکل `/dev/fd/63` — با `curl | sudo bash -s --` درست است.
+Default **`BRAND_NAME`** in `.env` is **`Sakabot`** (ASCII). Set **`BRAND_NAME=...`** in `.env` to Persian for Telegram welcome text.
 
-**چرا با `curl | sudo bash` منو کار نمی‌کرد؟** stdin اسکریپت است؛ نصب‌کننده الان سوال‌ها را از **`/dev/tty`** می‌خواند تا منو و `read` درست کار کنند.
-
-**زبان ترمینال:** پیام‌های `install.sh` به انگلیسی هستند تا در همهٔ SSH/encodingها خوانا باشند؛ متن‌های ربات برای کاربر همچنان فارسی است.
-
-نصب‌کننده به‌صورت خودکار انجام می‌دهد: بسته‌های سیستم، Python 3.11، PostgreSQL، کاربر/دیتابیس `sakabot`، پرسش تعاملی (`BOT_TOKEN`, `OWNER_ID`, `PUBLIC_BASE_URL`, …)، ساخت `.env`، venv در `/opt/sakabot/.venv`، `pip install`، migration، سرویس systemd **`sakabot`**، شروع ربات، و دستور **`sakabot`** در `/usr/local/bin`.
-
-اگر پوشهٔ نصب از قبل وجود داشته باشد، منو می‌آید: **به‌روزرسانی** (پیش‌فرض)، نصب مجدد با نگه‌داشتن `.env` و DB، یا نصب کامل با تأیید `DELETE`.
-
-**لاگ نصب:** `/tmp/sakabot-install.log`
+Install log: **`/tmp/sakabot-install.log`**
 
 ---
 
-## به‌روزرسانی یک‌خطی
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/main/install.sh | sudo bash -s -- --update
-```
-
-یا از منوی مدیریت: `sudo sakabot` → گزینهٔ **۲**.
-
----
-
-## مدیریت: دستور `sakabot`
+## Manager CLI
 
 ```bash
 sudo sakabot
 ```
 
-یا:
+Or:
 
 ```bash
 cd /opt/sakabot && sudo ./bot-manager.sh
@@ -76,7 +56,7 @@ cd /opt/sakabot && sudo ./bot-manager.sh
 
 ---
 
-## دستورات سرویس و لاگ
+## Service & logs
 
 ```bash
 sudo systemctl status sakabot
@@ -84,19 +64,19 @@ sudo journalctl -u sakabot -f
 sudo systemctl restart sakabot
 ```
 
-## Health و لینک ساب
+Health:
 
 ```bash
 curl -sS http://127.0.0.1:8080/health
 ```
 
-لینک ساب برای هر سرویس: `{PUBLIC_BASE_URL}/sub/{token}` (بعد از ساخت سرویس در ربات).
+Subscription URL pattern: `{PUBLIC_BASE_URL}/sub/<token>`
 
 ---
 
-## nginx و SSL
+## nginx & SSL
 
-در پایان نصب، در صورت داشتن آدرس `https` با دامنه، می‌توانید nginx را برای `/sub/` و `/health` به `127.0.0.1:8080` فعال کنید. برای گواهی:
+After install, you can enable nginx for `/sub/` and `/health` → `127.0.0.1:8080`. For certificates:
 
 ```bash
 sudo certbot --nginx -d sub.example.com
@@ -104,32 +84,26 @@ sudo certbot --nginx -d sub.example.com
 
 ---
 
-## خطاهای رایج
+## Common errors
 
 ### TelegramConflictError
 
-دو نمونه با یک `BOT_TOKEN` در حال اجراست، یا webhook فعال است. نصب‌کننده `deleteWebhook` را صدا می‌زند؛ با `sudo sakabot` → **۲۵** پردازش‌های تکراری را حذف کنید و سرویس را ری‌استارت کنید.
+Two processes use the same **BOT_TOKEN**, or a webhook is set. Installer calls **deleteWebhook**. Use **`sudo sakabot`** → **25** to kill duplicates, then restart.
 
-### خطای اتصال به PostgreSQL / DATABASE_URL
+### `.env` / database
 
-`.env` را با `sudo sakabot` → **۱۹** (نمایش ماسک‌شده) بررسی کنید. migration: گزینهٔ **۲۶**. رمز DB در ترمینال چاپ نمی‌شود؛ در `.env` ذخیره است.
-
-### ابطال توکن (@BotFather)
-
-اگر توکن عوض شد: `sudo sakabot` → **۱۴** (بدون چاپ توکن در لاگ عمومی).
+Use **`sudo sakabot`** → **19** (masked). Migrations: menu **26**. DB password is **not** printed to the terminal; it lives in `.env`.
 
 ---
 
-## بکاپ و بازیابی
+## Backup / restore
 
-- هنگام `--update` بکاپ SQL در `/opt/sakabot/backups/` گرفته می‌شود.
-- از منو: **۱۲** بکاپ، **۱۳** بازیابی (مسیر فایل).
+- **`--update`** creates a SQL dump under `/opt/sakabot/backups/` when possible.
+- Menu **12** backup, **13** restore.
 
 ---
 
-## نصب دستی (پیشرفته)
-
-فقط در صورت نیاز به کنترل کامل دستی:
+## Advanced manual install
 
 ```bash
 git clone https://github.com/diakoronin/Telegram-Auto-Pro-Full-Activated.git
@@ -138,18 +112,18 @@ git checkout main
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env && chmod 600 .env
-# پر کردن .env و PostgreSQL دستی
+# edit .env + PostgreSQL
 bash scripts/run_migrations.sh
 python3 main.py
 ```
 
 ---
 
-## تست توسعه‌دهنده
+## Developer tests
 
 ```bash
 pip install -r requirements-dev.txt
 python3 -m pytest tests -q
 ```
 
-جزئیات: `TESTING.md`، امنیت: `SECURITY.md`، پنل‌ها: `docs/API_PANELS.md`، دستی: `docs/MANUAL_MODE.md`، عملیات: `docs/OPERATIONS.md`.
+More: `TESTING.md`, `SECURITY.md`, `docs/API_PANELS.md`, `docs/MANUAL_MODE.md`, `docs/OPERATIONS.md`.

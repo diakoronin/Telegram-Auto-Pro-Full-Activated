@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     database_url: str = Field(..., alias="DATABASE_URL")
 
     public_base_url: str = Field("https://your-domain.com", alias="PUBLIC_BASE_URL")
-    brand_name: str = Field("ساکانت", alias="BRAND_NAME")
+    brand_name: str = Field("Sakabot", alias="BRAND_NAME")
     support_username: str = Field("", alias="SUPPORT_USERNAME")
     timezone: str = Field("Asia/Tehran", alias="TIMEZONE")
     footer_enabled: bool = Field(True, alias="FOOTER_ENABLED")

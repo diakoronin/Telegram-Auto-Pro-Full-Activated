@@ -318,8 +318,8 @@ interactive_questions() {
   [[ -n "${OWNER_ID:-}" ]] || die "OWNER_ID is empty"
   read_tty -r -p "PUBLIC_BASE_URL (e.g. https://sub.example.com): " PUBLIC_BASE_URL
   [[ -n "${PUBLIC_BASE_URL:-}" ]] || die "PUBLIC_BASE_URL is empty"
-  read_tty -r -p "BRAND_NAME [default: ساکانت]: " BRAND_NAME
-  BRAND_NAME="${BRAND_NAME:-ساکانت}"
+  read_tty -r -p "BRAND_NAME [default: Sakabot] (set Persian in .env for Telegram UI): " BRAND_NAME
+  BRAND_NAME="${BRAND_NAME:-Sakabot}"
   read_tty -r -p "SUPPORT_USERNAME (optional, no @): " SUPPORT_USERNAME
   echo -n "PostgreSQL password for user sakabot (empty = auto random): " >&2
   read_tty -r -s DB_PASSWORD
@@ -402,7 +402,12 @@ do_update() {
   install_apt_packages
   ensure_python311
   [[ -d "${INSTALL_DIR}/.git" ]] || die "Install not found — run full install first"
-  [[ -f "${INSTALL_DIR}/.env" ]] || die ".env missing — restore .env or run full install"
+  if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
+    warn ".env missing — interactive setup (same as first install)"
+    interactive_questions
+    pg_create_role_and_db "$DB_PASSWORD"
+    write_full_env "$BOT_TOKEN" "$OWNER_ID" "$PUBLIC_BASE_URL" "$BRAND_NAME" "${SUPPORT_USERNAME:-}" "$DB_PASSWORD" "$PANEL_KEY"
+  fi
   backup_db
   clone_or_pull
   cd "$INSTALL_DIR"

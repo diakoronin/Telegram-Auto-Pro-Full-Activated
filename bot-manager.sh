@@ -8,7 +8,7 @@ REPO_URL="${REPO_URL:-https://github.com/diakoronin/Telegram-Auto-Pro-Full-Activ
 INSTALL_BRANCH="${INSTALL_BRANCH:-main}"
 
 require_root() {
-  [[ "${EUID:-0}" -eq 0 ]] || { echo "با sudo اجرا کنید." >&2; exit 1; }
+  [[ "${EUID:-0}" -eq 0 ]] || { echo "Run as root: sudo sakabot" >&2; exit 1; }
 }
 
 mask_line() {
@@ -21,7 +21,7 @@ mask_line() {
 }
 
 view_settings() {
-  [[ -f "${INSTALL_DIR}/.env" ]] || { echo "بدون .env"; return; }
+  [[ -f "${INSTALL_DIR}/.env" ]] || { echo "No .env file"; return; }
   while IFS= read -r line; do
     [[ -z "$line" || "$line" =~ ^# ]] && continue
     mask_line "$line"
@@ -33,11 +33,11 @@ run_migrations() {
 }
 
 health() {
-  curl -fsS "http://127.0.0.1:${SUBSCRIPTION_API_PORT:-8080}/health" && echo "" || echo "Health failed"
+  curl -fsS "http://127.0.0.1:${SUBSCRIPTION_API_PORT:-8080}/health" && echo "" || echo "Health check failed"
 }
 
 dup_check() {
-  pgrep -af "${INSTALL_DIR}/.venv/bin/python.*${INSTALL_DIR}/main.py" || echo "پردازش تکراری یافت نشد"
+  pgrep -af "${INSTALL_DIR}/.venv/bin/python.*${INSTALL_DIR}/main.py" || echo "No duplicate process found"
 }
 
 dup_kill() {
@@ -50,13 +50,13 @@ backup_db() {
   require_root
   mkdir -p "${INSTALL_DIR}/backups"
   local f="${INSTALL_DIR}/backups/manual_$(date +%Y%m%d_%H%M%S).sql"
-  sudo -u postgres pg_dump sakabot >"$f" && echo "ذخیره شد: $f"
+  sudo -u postgres pg_dump sakabot >"$f" && echo "Saved: $f"
 }
 
 restore_db() {
   require_root
-  read -r -p "مسیر فایل .sql: " fp
-  [[ -f "$fp" ]] || { echo "فایل نیست"; return; }
+  read -r -p "Path to .sql file: " fp
+  [[ -f "$fp" ]] || { echo "File not found"; return; }
   sudo -u postgres psql -d sakabot -f "$fp"
 }
 
@@ -73,8 +73,8 @@ update_bot() {
 reinstall_menu() {
   require_root
   local inst_url="https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/${INSTALL_BRANCH}/install.sh"
-  echo "1) نگه‌داشتن .env و DB  2) نصب کامل (سوالات دوباره)"
-  read -r -p "انتخاب: " r
+  echo "1) Reinstall, keep .env + DB  2) Full reinstall (prompts again)"
+  read -r -p "Choice: " r
   case "$r" in
     1)
       if [[ -f "${INSTALL_DIR}/install.sh" ]]; then bash "${INSTALL_DIR}/install.sh" --reinstall
@@ -98,14 +98,7 @@ uninstall_bot() {
 
 nginx_setup() {
   require_root
-  pub=$(grep '^PUBLIC_BASE_URL=' "${INSTALL_DIR}/.env" | cut -d= -f2-)
-  INSTALL_DIR="$INSTALL_DIR" bash -c 'source /dev/null' 2>/dev/null
-  python3.11 - "$pub" <<'PY' 2>/dev/null || true
-import os, sys, subprocess
-# delegate to installer's nginx block: user runs certbot manually
-print("از install.sh برای nginx کامل استفاده کنید یا فایل sites-available را ویرایش کنید.")
-PY
-  echo "نمونه: proxy /sub/ و /health به 127.0.0.1:8080 — در README و install.sh موجود است."
+  echo "Edit nginx site to proxy /sub/ and /health to 127.0.0.1:8080 (see README / install.sh)."
 }
 
 ssl_renew() {
@@ -114,7 +107,7 @@ ssl_renew() {
 }
 
 send_backup_owner() {
-  echo "بکاپ خودکار هنگام اجرای ربات با AUTO_BACKUP_ENABLED ارسال می‌شود؛ یا backup_db را اجرا کنید."
+  echo "Hourly backup runs when bot is up with AUTO_BACKUP_ENABLED=true; or use menu 12 for manual SQL dump."
 }
 
 toggle_env_key() {
@@ -127,11 +120,11 @@ toggle_env_key() {
     echo "${key}=${val}" >>"${INSTALL_DIR}/.env"
   fi
   systemctl restart "$SERVICE_NAME" 2>/dev/null || true
-  echo "${key}=${val} (سرویس ری‌استارت شد)"
+  echo "${key}=${val} (service restarted if running)"
 }
 
 manual_import_help() {
-  echo "در تلگرام: 📥 ایمپورت لینک TXT — خط اول: id سرور دستی,id پلن (مثال 1,1)"
+  echo "In Telegram admin: manual TXT import — first line: manual_server_id,manual_plan_id (e.g. 1,1)"
 }
 
 manual_stock_sql() {
@@ -140,7 +133,7 @@ manual_stock_sql() {
 
 change_token() {
   require_root
-  read -r -s -p "BOT_TOKEN جدید: " t
+  read -r -s -p "New BOT_TOKEN: " t
   echo
   python3 - "$INSTALL_DIR/.env" "$t" <<'PY'
 import sys
@@ -182,53 +175,53 @@ install_first_time() {
   if [[ -f "${INSTALL_DIR}/install.sh" ]]; then
     bash "${INSTALL_DIR}/install.sh" --install
   else
-    echo "ابتدا install را از GitHub اجرا کنید (README)."
+    echo "Run installer from GitHub first (see README)."
   fi
 }
 
 menu() {
   cat <<'M'
-══ SakaBot Manager ══
- 1) نصب اولیه (install.sh)
- 2) به‌روزرسانی ربات
- 3) نصب مجدد (منو)
- 4) حذف نصب (install uninstall)
- 5) شروع سرویس
- 6) توقف سرویس
- 7) ری‌استارت سرویس
- 8) وضعیت سرویس
- 9) لاگ زنده (journalctl)
-10) ۱۰۰ خط آخر لاگ
-11) راه‌اندازی PostgreSQL (راهنما)
-12) بکاپ دیتابیس
-13) بازیابی دیتابیس
-14) تغییر BOT_TOKEN
-15) تغییر OWNER_ID
-16) تغییر PUBLIC_BASE_URL
-17) نام پشتیبانی (SUPPORT_USERNAME)
-18) نام برند (BRAND_NAME)
-19) نمایش تنظیمات (ماسک)
-20) نصب/تعمیر systemd (install.sh)
-21) فعال‌سازی خودکار
-22) غیرفعال‌سازی خودکار
+=== SakaBot Manager ===
+ 1) First-time install (install.sh)
+ 2) Update bot
+ 3) Reinstall (submenu)
+ 4) Uninstall (install.sh --uninstall)
+ 5) Start service
+ 6) Stop service
+ 7) Restart service
+ 8) Service status
+ 9) Follow logs (journalctl)
+10) Last 100 log lines
+11) PostgreSQL setup (hint)
+12) Backup database (SQL)
+13) Restore database
+14) Change BOT_TOKEN
+15) Change OWNER_ID
+16) Change PUBLIC_BASE_URL
+17) SUPPORT_USERNAME
+18) BRAND_NAME (use Persian in .env for Telegram if you want)
+19) Show settings (masked)
+20) Repair systemd (run install.sh)
+21) Enable service on boot
+22) Disable service on boot
 23) Health check
-24) پردازش‌های تکراری
-25) حذف پردازش‌های تکراری
-26) اجرای migration
-27) بررسی chmod .env
-28) فایروال UFW (راهنما)
+24) List duplicate processes
+25) Kill duplicate processes + stop service
+26) Run migrations
+27) chmod 600 .env
+28) UFW hint
 29) htop
-30) ارسال بکاپ به مالک (راهنما)
-31) AUTO_BACKUP=true
-32) AUTO_BACKUP=false
-33) nginx (راهنما)
-34) SSL renew
-35) تست subscription curl
-36) ایمپورت دستی (راهنما)
-37) موجودی دستی SQL
-38) MANUAL_MODE on/off
-39) API_PRODUCTS on/off
- 0) خروج
+30) Backup to owner (hint)
+31) AUTO_BACKUP_ENABLED=true
+32) AUTO_BACKUP_ENABLED=false
+33) nginx hint
+34) SSL renew (certbot)
+35) Test subscription endpoint (curl)
+36) Manual import (hint)
+37) Manual stock SQL
+38) MANUAL_MODE_ENABLED true/false
+39) API_PRODUCTS_ENABLED true/false
+ 0) Exit
 M
 }
 
@@ -248,7 +241,7 @@ main_loop() {
       8) systemctl status "$SERVICE_NAME" --no-pager || true ;;
       9) journalctl -u "$SERVICE_NAME" -f ;;
       10) journalctl -u "$SERVICE_NAME" -n 100 --no-pager ;;
-      11) echo "CREATE USER/DB — install.sh یا docs";;
+      11) echo "Hint: use install.sh for DB user sakabot, or: sudo -u postgres createuser/createdb";;
       12) require_root; backup_db ;;
       13) restore_db ;;
       14) change_token ;;
@@ -257,7 +250,7 @@ main_loop() {
       17) read -r -p "SUPPORT_USERNAME: " s; require_root; sed -i "s/^SUPPORT_USERNAME=.*/SUPPORT_USERNAME=${s}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "SUPPORT_USERNAME=${s}" >>"${INSTALL_DIR}/.env"; systemctl restart "$SERVICE_NAME" ;;
       18) read -r -p "BRAND_NAME: " b; require_root; sed -i "s/^BRAND_NAME=.*/BRAND_NAME=${b}/" "${INSTALL_DIR}/.env"; systemctl restart "$SERVICE_NAME" ;;
       19) view_settings ;;
-      20) require_root; [[ -f "${INSTALL_DIR}/install.sh" ]] && bash "${INSTALL_DIR}/install.sh" --install || echo "install.sh را از repo کپی کنید" ;;
+      20) require_root; [[ -f "${INSTALL_DIR}/install.sh" ]] && bash "${INSTALL_DIR}/install.sh" --install || echo "Copy install.sh from repo into ${INSTALL_DIR}" ;;
       21) require_root; systemctl enable "$SERVICE_NAME" ;;
       22) require_root; systemctl disable "$SERVICE_NAME" ;;
       23) health ;;
@@ -277,14 +270,13 @@ main_loop() {
       37) manual_stock_sql ;;
       38) read -r -p "true/false: " v; require_root; toggle_env_key "MANUAL_MODE_ENABLED" "$v" ;;
       39) read -r -p "true/false: " v; require_root; toggle_env_key "API_PRODUCTS_ENABLED" "$v" ;;
-      *) echo "نامعتبر" ;;
+      *) echo "Invalid choice" ;;
     esac
   done
 }
 
-# اگر مستقیماً با آرگومان فراخوانی شد (برای اسکریپت)
 case "${1:-}" in
   --update) require_root; update_bot ;;
   "") main_loop ;;
-  *) echo "استفاده: sakabot   یا   sudo sakabot" ;;
+  *) echo "Usage: sakabot   or   sudo sakabot" ;;
 esac

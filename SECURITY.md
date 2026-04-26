@@ -1,8 +1,8 @@
-# امنیت
+# Security
 
-- فایل `.env` باید `chmod 600` باشد و در git قرار نگیرد.
-- `BOT_TOKEN`، رمز پنل، کوکی 3x-ui، توکن API و توکن کامل اشتراک هرگز در لاگ چاپ نمی‌شوند.
-- رمزهای پنل با `PANEL_CREDENTIAL_ENCRYPTION_KEY` رمزنگاری شده ذخیره می‌شوند.
-- شماره کارت کامل فقط در فاکتور کاربر (HTML) نمایش داده می‌شود؛ در لاگ عادی رد می‌شود مگر `DEBUG_CARD_LOGGING=true`.
-- اندپوینت `/sub/{token}` بدون افشای توکن نامعتبر، پاسخ خالی/۴۰۴ برمی‌گرداند.
-- برای جلوگیری از تقلب، تأیید پرداخت با قفل ردیف (`FOR UPDATE`) انجام می‌شود تا تأیید دوباره ممکن نباشد.
+- Keep `.env` at mode `600` and never commit it to git.
+- Do not log `BOT_TOKEN`, panel passwords, 3x-ui cookies, API tokens, or full subscription tokens.
+- Panel secrets are stored encrypted with `PANEL_CREDENTIAL_ENCRYPTION_KEY`.
+- Full card numbers appear only in user HTML invoices; logs redact cards unless `DEBUG_CARD_LOGGING=true`.
+- Invalid `/sub/{token}` requests return empty/404 without leaking whether a token exists.
+- Payment approval uses row locking so double approval is not possible.
