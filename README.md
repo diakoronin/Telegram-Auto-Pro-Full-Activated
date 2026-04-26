@@ -2,6 +2,23 @@
 
 Python 3.11+ bot built with **aiogram 3** and **SQLAlchemy 2 (async)**. Wallet charges go through **pending payment requests** with **row-locked approve/reject**; purchases reserve a link with **`SELECT … FOR UPDATE`** (PostgreSQL: **`SKIP LOCKED`**) and update wallet in the **same transaction**.
 
+## نصب / آپدیت سریع با یک دستور (`scripts/quick.sh`)
+
+روی سرور (SSH). اگر **همان پوشه قبلاً نصب شده** باشد، خودش `update.sh` را صدا می‌زند (توقف ربات → pull → pip → روشن دوباره). اگر نبود، `install.sh` را با `sudo` می‌گیرد.
+
+```bash
+BRANCH="main"   # یا شاخهٔ feature
+curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/${BRANCH}/scripts/quick.sh" | bash -s -- "$HOME/telegram-sales-bot" "$BRANCH"
+```
+
+- آرگومان اول: مسیر نصب (پیش‌فرض در اسکریپت: `~/telegram-sales-bot`).
+- آرگومان دوم: شاخهٔ گیت.
+- ریپوی دیگر: `REPO_URL=https://github.com/org/repo.git` قبل از `curl`.
+
+**شاخهٔ حاوی `/`** (مثل `cursor/foo`): اگر `curl` خطای ۴۰۴ داد، همان کار را بعد از `git clone` دستی از داخل پوشه با `bash scripts/update.sh` انجام دهید.
+
+---
+
 ## One-line / full install on a Linux server (Debian/Ubuntu)
 
 The **`scripts/install.sh`** script (run as **root** with `sudo`) will:
