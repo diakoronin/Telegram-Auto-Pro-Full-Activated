@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import TelegramObject
 
 from app import texts_fa as T
+from app.bot.middlewares.update_compat import callback_from_event, message_from_event
 from app.db.models import Admin, AdminRole
 
 
@@ -22,20 +23,22 @@ class SellerUserFlowBlockMiddleware(BaseMiddleware):
         if admin is None or admin.role != AdminRole.SELLER:
             return await handler(event, data)
 
-        if isinstance(event, Message):
-            txt = (event.text or "").strip()
+        msg = message_from_event(event)
+        if msg is not None:
+            txt = (msg.text or "").strip()
             if txt.startswith("/admin"):
                 return await handler(event, data)
             # Sellers still need /start, /menu, and /ping like any user.
             if txt.startswith("/start") or txt.startswith("/menu") or txt.startswith("/ping"):
                 return await handler(event, data)
-            await event.answer(
+            await msg.answer(
                 "فروشنده فقط می‌تواند از دستور /admin برای تحویل دستی لینک استفاده کند."
             )
             return None
 
-        if isinstance(event, CallbackQuery):
-            d = event.data or ""
+        cq = callback_from_event(event)
+        if cq is not None:
+            d = cq.data or ""
             blocked = (
                 d == "shop"
                 or d == "wallet"
@@ -48,7 +51,7 @@ class SellerUserFlowBlockMiddleware(BaseMiddleware):
                 or d.startswith("buy:")
             )
             if blocked:
-                await event.answer(T.UNAUTHORIZED, show_alert=True)
+                await cq.answer(T.UNAUTHORIZED, show_alert=True)
                 return None
             return await handler(event, data)
 
