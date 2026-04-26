@@ -10,6 +10,13 @@ START_WELCOME = "به ربات فروش خوش آمدید."
 MENU_USER = "منوی اصلی:"
 MENU_ADMIN = "پنل مدیریت:"
 
+PONG = "pong"
+FALLBACK_UNKNOWN_MESSAGE = (
+    "لطفاً از منوی ربات استفاده کنید یا /start را بزنید."
+)
+FALLBACK_UNKNOWN_CALLBACK = "درخواست نامعتبر است. از منوی ربات استفاده کنید."
+START_CONTEXT_ERROR = "خطای داخلی. لطفاً چند لحظه بعد دوباره /start را بزنید."
+
 BTN_SHOP = "خرید"
 BTN_WALLET = "کیف پول"
 BTN_CHARGE = "شارژ حساب"

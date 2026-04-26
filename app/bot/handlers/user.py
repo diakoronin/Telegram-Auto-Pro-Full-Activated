@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -56,31 +56,81 @@ async def cmd_start(
     message: Message,
     session: AsyncSession,
     settings: Settings,
+    _command: CommandObject,
     db_user: User | None = None,
     admin: Admin | None = None,
     **kwargs: Any,
 ) -> None:
-    if message.from_user is None or db_user is None:
-        return
-    await write_audit(
-        session,
-        actor_telegram_id=message.from_user.id if message.from_user else None,
-        actor_role=admin.role.value if admin else "user",
-        action="user_start",
-        target_type="user",
-        target_id=str(db_user.id),
-    )
-    text = T.START_WELCOME + "\n" + T.MENU_USER
-    if admin:
-        text += "\n\nبرای پنل مدیریت از /admin استفاده کنید."
-    await message.answer(text, reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed))
+    """Always send a visible reply for /start (never silent return)."""
+    _ = _command  # deep-link payload reserved for future use
+    sent = False
+    try:
+        fu = message.from_user
+        if fu is None:
+            logger.warning(
+                "cmd_start: missing from_user chat_id=%s chat_type=%s",
+                message.chat.id,
+                message.chat.type,
+            )
+            await message.answer(T.START_CONTEXT_ERROR)
+            sent = True
+            return
+
+        if db_user is None:
+            logger.error(
+                "cmd_start: db_user missing for telegram_id=%s — context middleware bug?",
+                fu.id,
+            )
+            await message.answer(T.START_CONTEXT_ERROR)
+            sent = True
+            return
+
+        role = admin.role.value if admin else "user"
+        logger.info(
+            "cmd_start: telegram_id=%s role=%s db_user_id=%s card_view=%s",
+            fu.id,
+            role,
+            db_user.id,
+            db_user.card_view_allowed,
+        )
+
+        await write_audit(
+            session,
+            actor_telegram_id=fu.id,
+            actor_role=role,
+            action="user_start",
+            target_type="user",
+            target_id=str(db_user.id),
+        )
+        text = T.START_WELCOME + "\n" + T.MENU_USER
+        if admin:
+            text += "\n\nبرای پنل مدیریت از /admin استفاده کنید."
+        await message.answer(text, reply_markup=_main_kb(card_view_allowed=db_user.card_view_allowed))
+        sent = True
+        logger.info("cmd_start: reply sent telegram_id=%s", fu.id)
+    except Exception:
+        logger.exception(
+            "cmd_start: exception telegram_id=%s",
+            message.from_user.id if message.from_user else None,
+        )
+        if not sent:
+            try:
+                await message.answer(T.START_CONTEXT_ERROR)
+            except Exception:
+                logger.exception("cmd_start: failed to send fallback error message")
+
+
+@router.message(Command("ping"))
+async def cmd_ping(message: Message, **kwargs: Any) -> None:
+    await message.answer(T.PONG)
 
 
 @router.message(Command("menu"))
 async def cmd_menu(
     message: Message, db_user: User | None = None, **kwargs: Any
 ) -> None:
-    if db_user is None:
+    if message.from_user is None or db_user is None:
+        await message.answer(T.START_CONTEXT_ERROR)
         return
     await message.answer(
         T.MENU_USER,

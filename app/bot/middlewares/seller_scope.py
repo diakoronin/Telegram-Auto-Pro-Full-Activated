@@ -26,6 +26,9 @@ class SellerUserFlowBlockMiddleware(BaseMiddleware):
             txt = (event.text or "").strip()
             if txt.startswith("/admin"):
                 return await handler(event, data)
+            # Sellers still need /start, /menu, and /ping like any user.
+            if txt.startswith("/start") or txt.startswith("/menu") or txt.startswith("/ping"):
+                return await handler(event, data)
             await event.answer(
                 "فروشنده فقط می‌تواند از دستور /admin برای تحویل دستی لینک استفاده کند."
             )
