@@ -1,9 +1,11 @@
 """
 HTTP subscription endpoint: GET /sub/{subscription_token}
 
-Each purchased service has its own row in user_services and its own subscription_token.
-GET /sub/{token} resolves that single service and returns only the active panel_account
-config lines (after migration, the new active account is served; URL unchanged).
+Each **API-managed** purchased service has its own row in ``user_services`` and its own
+``subscription_token``. This endpoint only reads those rows plus the active
+``panel_account`` — it never includes **manual stock links** (admin manual delivery),
+because those are not tied to ``user_services`` and the bot does not track their
+traffic or expiry centrally. Manual delivery stays a separate admin workflow.
 """
 
 from __future__ import annotations

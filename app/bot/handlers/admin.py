@@ -868,7 +868,10 @@ async def cb_manual(callback: CallbackQuery, session: AsyncSession, admin: Admin
             ]
         )
     kb.append([InlineKeyboardButton(text="بازگشت", callback_data="admin_home")])
-    await callback.message.edit_text("پلن را برای تحویل دستی انتخاب کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.message.edit_text(
+        f"{T.ADM_MANUAL_INTRO}\n\nپلن را برای تحویل دستی انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+    )
     await callback.answer()
 
 
@@ -942,6 +945,7 @@ async def msg_manual_customer(
         f"🕒 {dt_s}\n\n"
         "🔗 لینک:\n"
         f"{format_copyable_code(link or '')}"
+        f"{T.ADM_MANUAL_DELIVERED_FOOTNOTE}"
     )
     await message.answer(
         format_message(settings, body),

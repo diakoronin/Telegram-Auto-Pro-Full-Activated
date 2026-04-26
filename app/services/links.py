@@ -118,6 +118,15 @@ async def admin_manual_deliver(
     plan_id: int,
     customer_info: str | None,
 ) -> tuple[bool, str | None, str | None, int | None]:
+    """
+    Admin-only: deliver one raw link from stock (Delivery, no Purchase).
+
+    This path is **separate** from API-based services:
+    - Does **not** create ``user_services`` or ``panel_accounts``.
+    - The link is **not** served under ``/sub/{subscription_token}`` (no central
+      quota/usage in the bot for that link).
+    Panel/API purchases use a different flow with stable bot subscription URLs.
+    """
     plan = await session.get(Plan, plan_id)
     if plan is None or plan.server_id != server_id:
         return False, None, "پلن نامعتبر است.", None
