@@ -10,8 +10,55 @@
 - Python 3.11+
 - PostgreSQL (پیشنهادی برای production)
 - توکن ربات، شناسه عددی مالک، کلید رمزنگاری پنل
+- ابزار `git` روی سرور
 
-## نصب سریع
+## نصب مستقیم از GitHub
+
+روی VPS (یا هر سرور لینوکس) مخزن را کلون کنید، وارد پوشه شوید، و اگر کد ربات روی شاخهٔ `main` ادغام نشده، همان شاخه‌ای را که ربات روی آن است checkout کنید:
+
+```bash
+cd /opt
+sudo git clone https://github.com/diakoronin/Telegram-Auto-Pro-Full-Activated.git sakabot
+sudo chown -R "$USER:$USER" sakabot
+cd sakabot
+
+# اگر ربات روی main است:
+git checkout main
+git pull origin main
+
+# اگر هنوز روی شاخهٔ توسعه است (مثال):
+# git fetch origin && git checkout cursor/telegram-vpn-sales-bot-c6f2
+```
+
+سپس محیط مجازی و وابستگی‌ها:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+cp .env.example .env
+chmod 600 .env
+```
+
+فایل `.env` را با ویرایشگر پر کنید (`BOT_TOKEN`, `OWNER_ID`, `DATABASE_URL`, `PUBLIC_BASE_URL`, `PANEL_CREDENTIAL_ENCRYPTION_KEY` و بقیهٔ مقادیر `.env.example`). بعد:
+
+```bash
+source .venv/bin/activate
+python3 main.py
+```
+
+**نصب با یک دستور (بدون clone دستی):** اگر قبلاً پوشه‌ای ندارید:
+
+```bash
+git clone https://github.com/diakoronin/Telegram-Auto-Pro-Full-Activated.git && cd Telegram-Auto-Pro-Full-Activated && git checkout main
+```
+
+برای نصب سیستمی با کاربر جدا، systemd و PostgreSQL می‌توانید از `./bot-manager.sh` (با `sudo`) استفاده کنید؛ اسکریپت از همان پوشهٔ کلون‌شده قابل اجراست.
+
+## نصب سریع (همان مراحل داخل پوشهٔ پروژه)
+
+اگر از قبل `git clone` کرده‌اید:
 
 ```bash
 python3.11 -m venv .venv
