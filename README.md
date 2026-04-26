@@ -2,6 +2,57 @@
 
 # Telegram-Auto-Pro-Full-Activated
 
+## GitHub
+
+Repository: https://github.com/diakoronin/Telegram-Auto-Pro-Full-Activated
+
+## ربات تلگرام گروه و لینک ساب (`group_sub_bot.py`)
+
+کد ربات روی شاخه **`cursor/telegram-group-sub-bot-0f07`** است (تا وقتی به `main` مرج شود). Python 3.9+ لازم است.
+
+### نصب مستقیم روی سرور
+
+```bash
+git clone https://github.com/diakoronin/Telegram-Auto-Pro-Full-Activated.git
+cd Telegram-Auto-Pro-Full-Activated
+git checkout cursor/telegram-group-sub-bot-0f07
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+سپس در `.env` مقداردهی کنید: `TELEGRAM_BOT_TOKEN` و `TELEGRAM_ADMIN_IDS` (آیدی عددی تلگرام، با کاما برای چند نفر). اجرا:
+
+```bash
+source .venv/bin/activate
+set -a && source .env && set +a
+python3 group_sub_bot.py
+```
+
+اگر ترجیح می‌دهید بدون فایل `.env` باشد:
+
+```bash
+export TELEGRAM_BOT_TOKEN="توکن_از_BotFather"
+export TELEGRAM_ADMIN_IDS="123456789"
+python3 group_sub_bot.py
+```
+
+### آپدیت مستقیم روی سرور
+
+```bash
+cd Telegram-Auto-Pro-Full-Activated
+git fetch origin
+git checkout cursor/telegram-group-sub-bot-0f07
+git pull origin cursor/telegram-group-sub-bot-0f07
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+بعد ربات را دوباره اجرا کنید (مثلاً `systemctl restart ...` یا `Ctrl+C` و دوباره `python3 group_sub_bot.py`).
+
+**بعد از مرج به `main`:** به‌جای شاخهٔ بالا از `git checkout main` و `git pull origin main` استفاده کنید.
+
 ##### Program Features
 ----------------------
 📌 activated
