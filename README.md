@@ -32,6 +32,18 @@ Optional **systemd**:
 cd /opt/telegram-sales-bot && sudo bash scripts/install-systemd.sh
 ```
 
+### TelegramConflictError (getUpdates)
+
+Only **one** process may poll Telegram with the same bot token. If you see `Conflict: terminated by other getUpdates request`:
+
+```bash
+sudo systemctl stop telegram-sales-bot.service
+pkill -f "telegram-sales-bot/main.py" || true
+# then start only one: either `python main.py` OR `systemctl start ...`, not both
+```
+
+If you use **webhook** elsewhere for this bot, switch that off or use a different bot token for this codebase.
+
 If the bot **does not start**, run (from the install directory, as the project owner):
 
 ```bash
