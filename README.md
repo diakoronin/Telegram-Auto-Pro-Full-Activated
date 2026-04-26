@@ -53,6 +53,8 @@ pip install -r requirements.txt
 
 **بعد از مرج به `main`:** به‌جای شاخهٔ بالا از `git checkout main` و `git pull origin main` استفاده کنید.
 
+**همگام‌سازی لیست گروه با تلگرام:** با `/listgroups`، `/mygroups`، `/pick` و `/admincheck` قبل از نمایش، عنوان گروه‌ها از API خوانده می‌شود و اگر ربات از گروه بیرون انداخته شده باشد آن رکورد حذف می‌شود. رویداد خروج ربات (`my_chat_member`) و تغییر نام گروه (`new_chat_title`) هم ذخیره را به‌روز می‌کنند. برای همگام‌سازی دستی: `/syncgroups`.
+
 ##### Program Features
 ----------------------
 📌 activated

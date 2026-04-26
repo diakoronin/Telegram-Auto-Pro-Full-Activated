@@ -18,10 +18,18 @@ import re
 from pathlib import Path
 from typing import Any
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden, TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -132,6 +140,142 @@ GROUP_CB_PREFIX = "g:"
 LEGACY_PICK_INDEX_RE = re.compile(r"^pick:(\d+)$")
 
 
+def _remove_group_by_chat_id(store: dict[str, Any], chat_id: int) -> bool:
+    groups: list[dict[str, Any]] = store.get("groups") or []
+    before = len(groups)
+
+    def _cid(x: dict[str, Any]) -> int | None:
+        c = x.get("chat_id")
+        if c is None:
+            return None
+        try:
+            return int(c)
+        except (TypeError, ValueError):
+            return None
+
+    store["groups"] = [g for g in groups if _cid(g) != chat_id]
+    return len(store["groups"]) < before
+
+
+async def sync_store_with_telegram(bot: Bot, store: dict[str, Any]) -> tuple[bool, int, int]:
+    """
+    عنوان و username هر گروه را از تلگرام می‌گیرد؛ اگر ربات دیگر به چت دسترسی ندارد، رکورد حذف می‌شود.
+    برمی‌گرداند: (تغییر در فایل؟, تعداد به‌روزرسانی عنوان, تعداد حذف‌شده).
+    """
+    groups: list[dict[str, Any]] = list(store.get("groups") or [])
+    if not groups:
+        return False, 0, 0
+    updated = 0
+    removed = 0
+    new_list: list[dict[str, Any]] = []
+    for g in groups:
+        cid = g.get("chat_id")
+        if cid is None:
+            continue
+        try:
+            cid_int = int(cid)
+        except (TypeError, ValueError):
+            continue
+        try:
+            chat = await bot.get_chat(cid_int)
+        except Forbidden:
+            removed += 1
+            logger.info("حذف از لیست (بدون دسترسی / اخراج): chat_id=%s", cid_int)
+            continue
+        except BadRequest as e:
+            err = str(e).lower()
+            if "not found" in err or "chat not found" in err or "chat not exist" in err:
+                removed += 1
+                logger.info("حذف از لیست (چت پیدا نشد): chat_id=%s", cid_int)
+                continue
+            new_list.append(g)
+            logger.warning("get_chat ناموفح برای %s: %s", cid_int, e)
+            continue
+        except TelegramError as e:
+            new_list.append(g)
+            logger.warning("get_chat خطا برای %s: %s", cid_int, e)
+            continue
+        new_title = chat.title or str(cid_int)
+        new_username = getattr(chat, "username", None)
+        if g.get("title") != new_title or g.get("username") != new_username:
+            g["title"] = new_title
+            g["username"] = new_username
+            updated += 1
+        new_list.append(g)
+        await asyncio.sleep(0.03)
+    changed = updated > 0 or removed > 0 or len(new_list) != len(groups)
+    if changed:
+        deduped, dup_fix = dedupe_groups(new_list)
+        store["groups"] = deduped
+        if dup_fix:
+            changed = True
+        save_store(store)
+    return changed, updated, removed
+
+
+async def cmd_syncgroups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id if update.effective_user else None
+    if not is_admin(uid):
+        await update.message.reply_text("مجاز نیستید.")
+        return
+    store = load_store()
+    ch, up, rm = await sync_store_with_telegram(context.bot, store)
+    if ch:
+        await update.message.reply_text(
+            f"همگام شد. عنوان به‌روز: {up} گروه، حذف‌شده (بدون دسترسی): {rm} گروه."
+        )
+    else:
+        await update.message.reply_text("تغییری نبود؛ لیست با تلگرام هم‌خوان است.")
+
+
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cmu = update.my_chat_member
+    if not cmu or not cmu.chat:
+        return
+    chat = cmu.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+    chat_id = chat.id
+    new_st = cmu.new_chat_member.status
+    store = load_store()
+    if new_st in ("left", "kicked"):
+        if _remove_group_by_chat_id(store, chat_id):
+            save_store(store)
+            logger.info("ربات از گروه خارج شد؛ حذف از لیست: %s", chat_id)
+        return
+    if new_st in ("member", "administrator", "restricted", "creator"):
+        g = _find_group(store.get("groups") or [], chat_id)
+        if g is None:
+            return
+        title = chat.title or str(chat_id)
+        un = getattr(chat, "username", None)
+        if g.get("title") != title or g.get("username") != un:
+            g["title"] = title
+            g["username"] = un
+            save_store(store)
+            logger.info("عنوان گروه از my_chat_member به‌روز شد: %s", chat_id)
+
+
+async def on_new_chat_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg or not msg.chat:
+        return
+    if msg.chat.type not in ("group", "supergroup"):
+        return
+    chat_id = msg.chat.id
+    new_title = msg.new_chat_title
+    if not new_title:
+        return
+    store = load_store()
+    g = _find_group(store.get("groups") or [], chat_id)
+    if g is None:
+        return
+    if g.get("title") != new_title:
+        g["title"] = new_title
+        save_store(store)
+        logger.info("عنوان گروه از پیام new_chat_title به‌روز شد: %s", chat_id)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id if update.effective_user else None
     if not is_admin(uid):
@@ -147,6 +291,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/pick <شماره> — انتخاب گروه مقصد برای ارسال لینک‌ها\n"
         "/listgroups — دکمه‌های انتخاب گروه\n"
         "/dedupgroups — حذف دستی تکرارها از فایل (معمولاً خودکار انجام می‌شود)\n"
+        "/syncgroups — همگام‌سازی دستی عنوان‌ها با تلگرام و حذف گروه‌های بدون دسترسی\n"
         "/admincheck — بررسی اینکه ربات در هر گروه ادمین است یا نه\n"
         "/subs_start — شروع جمع‌آوری لینک‌ها (هر خط یک لینک)\n"
         "/subs_done — پایان لیست لینک‌ها\n"
@@ -216,11 +361,14 @@ async def cmd_mygroups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("مجاز نیستید.")
         return
     store = load_store()
+    _ch, up, rm = await sync_store_with_telegram(context.bot, store)
     groups = store["groups"]
     if not groups:
         await update.message.reply_text("هیچ گروهی ثبت نشده. از /addgroup یا /register استفاده کنید.")
         return
     lines = []
+    if up or rm:
+        lines.append(f"همگام با تلگرام: {up} عنوان به‌روز، {rm} گروه حذف شد.\n")
     for i, g in enumerate(groups, start=1):
         cid = g.get("chat_id")
         title = g.get("title", "?")
@@ -243,6 +391,7 @@ async def cmd_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("شماره نامعتبر.")
         return
     store = load_store()
+    await sync_store_with_telegram(context.bot, store)
     groups = store["groups"]
     if n < 1 or n > len(groups):
         await update.message.reply_text("شماره خارج از محدوده لیست است.")
@@ -259,6 +408,7 @@ async def cmd_listgroups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("مجاز نیستید.")
         return
     store = load_store()
+    ch, up, rm = await sync_store_with_telegram(context.bot, store)
     groups = store["groups"]
     if not groups:
         await update.message.reply_text("لیست خالی است.")
@@ -276,7 +426,13 @@ async def cmd_listgroups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             row = []
     if row:
         rows.append(row)
-    await update.message.reply_text("یک گروه را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(rows))
+    hint = ""
+    if ch and (up or rm):
+        hint = f"\n(لیست با تلگرام همگام شد: {up} عنوان به‌روز، {rm} گروه حذف شد)"
+    await update.message.reply_text(
+        "یک گروه را انتخاب کنید:" + hint,
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -287,6 +443,7 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     data = q.data or ""
     store = load_store()
+    await sync_store_with_telegram(context.bot, store)
     groups = store["groups"]
     g: dict[str, Any] | None = None
     if data.startswith(GROUP_CB_PREFIX):
@@ -362,6 +519,9 @@ async def cmd_admincheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     bot = context.bot
     me = await bot.get_me()
     store = load_store()
+    ch, up, rm = await sync_store_with_telegram(bot, store)
+    if ch and (up or rm):
+        await update.message.reply_text(f"(قبل از بررسی ادمین: {up} عنوان به‌روز، {rm} گروه بدون دسترسی حذف شد)")
     groups = store["groups"]
     if not groups:
         await update.message.reply_text("لیست گروه خالی است.")
@@ -466,12 +626,18 @@ def main() -> None:
     app.add_handler(CommandHandler("pick", cmd_pick))
     app.add_handler(CommandHandler("listgroups", cmd_listgroups))
     app.add_handler(CommandHandler("dedupgroups", cmd_dedupgroups))
+    app.add_handler(CommandHandler("syncgroups", cmd_syncgroups))
     app.add_handler(CommandHandler("remove", cmd_remove))
     app.add_handler(CommandHandler("admincheck", cmd_admincheck))
     app.add_handler(CommandHandler("subs_start", cmd_subs_start))
     app.add_handler(CommandHandler("subs_done", cmd_subs_done))
     app.add_handler(CommandHandler("send_subs", cmd_send_subs))
     app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^(g:-?\d+|pick:\d+)$"))
+    app.add_handler(ChatMemberHandler(on_my_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
+    app.add_handler(
+        MessageHandler(filters.StatusUpdate.NEW_CHAT_TITLE, on_new_chat_title),
+        group=0,
+    )
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_collect_subs),
         group=1,
