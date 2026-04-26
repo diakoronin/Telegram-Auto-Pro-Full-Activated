@@ -33,6 +33,10 @@ class UserContextMiddleware(BaseMiddleware):
         else:
             return await handler(event, data)
 
+        # Always set keys so handlers never get TypeError from missing injection
+        # (e.g. channel posts / edge updates with no from_user).
+        data["db_user"] = None
+        data["admin"] = None
         if tid is None:
             return await handler(event, data)
 
