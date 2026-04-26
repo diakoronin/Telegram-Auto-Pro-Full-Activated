@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import logging
 import os
 
@@ -56,6 +57,9 @@ from app.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Bulk .txt import: keep below Telegram's upload limits and memory-safe.
+_MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024
 
 router = Router(name="admin")
 router.message.filter(IsAdmin())
@@ -637,7 +641,7 @@ async def cb_import_pick(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(import_server_id=int(sid_s), import_plan_id=int(pid_s))
     await state.set_state(AdminStates.import_links_paste)
     await callback.message.answer(
-        "لینک‌ها را هر خط یکی بفرستید:",
+        T.IMPORT_FILE_HELP,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="لغو", callback_data="admin_cancel_fsm")]
@@ -647,14 +651,26 @@ async def cb_import_pick(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(AdminStates.import_links_paste, F.text)
-async def msg_import_links(
+def _decode_import_file(raw: bytes) -> tuple[str | None, str | None]:
+    """Return (text, error_fa)."""
+    for enc in ("utf-8-sig", "utf-8"):
+        try:
+            return raw.decode(enc), None
+        except UnicodeDecodeError:
+            continue
+    return None, T.IMPORT_FILE_DECODE_ERROR
+
+
+async def _finalize_link_import(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
     admin: Admin,
     settings: Settings,
     after_commit: list,
+    lines: list[str],
+    *,
+    source: str,
 ) -> None:
     ok = await consume_rate(
         session,
@@ -668,7 +684,6 @@ async def msg_import_links(
     data = await state.get_data()
     sid = int(data["import_server_id"])
     pid = int(data["import_plan_id"])
-    lines = (message.text or "").splitlines()
     added, dup_b, dup_db, err = await bulk_import_links(
         session,
         server_id=sid,
@@ -687,7 +702,12 @@ async def msg_import_links(
         action="links_imported",
         target_type="plan",
         target_id=str(pid),
-        metadata={"added": added, "dup_batch": dup_b, "dup_db": dup_db},
+        metadata={
+            "added": added,
+            "dup_batch": dup_b,
+            "dup_db": dup_db,
+            "source": source,
+        },
     )
     await state.clear()
     await message.answer(
@@ -702,6 +722,76 @@ async def msg_import_links(
         )
 
     after_commit.append(_stock)
+
+
+@router.message(AdminStates.import_links_paste, F.text)
+async def msg_import_links(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin: Admin,
+    settings: Settings,
+    after_commit: list,
+) -> None:
+    lines = (message.text or "").splitlines()
+    await _finalize_link_import(
+        message,
+        state,
+        session,
+        admin,
+        settings,
+        after_commit,
+        lines,
+        source="paste",
+    )
+
+
+@router.message(AdminStates.import_links_paste, F.document)
+async def msg_import_links_document(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin: Admin,
+    settings: Settings,
+    after_commit: list,
+) -> None:
+    doc = message.document
+    if doc is None:
+        return
+    fname = (doc.file_name or "").lower()
+    mime = (doc.mime_type or "").lower()
+    looks_txt = fname.endswith(".txt")
+    looks_plain = mime.startswith("text/plain") or mime == "application/octet-stream"
+    if not looks_txt and not looks_plain:
+        await message.answer(T.IMPORT_FILE_NOT_TEXT)
+        return
+    if doc.file_size is not None and doc.file_size > _MAX_IMPORT_FILE_BYTES:
+        await message.answer(T.IMPORT_FILE_TOO_LARGE)
+        return
+    buf = io.BytesIO()
+    await message.bot.download(doc, destination=buf, timeout=120)
+    raw = buf.getvalue()
+    if len(raw) > _MAX_IMPORT_FILE_BYTES:
+        await message.answer(T.IMPORT_FILE_TOO_LARGE)
+        return
+    text, dec_err = _decode_import_file(raw)
+    if dec_err or text is None:
+        await message.answer(dec_err or T.IMPORT_FILE_DECODE_ERROR)
+        return
+    lines = text.splitlines()
+    if not any(s.strip() for s in lines):
+        await message.answer(T.IMPORT_FILE_EMPTY)
+        return
+    await _finalize_link_import(
+        message,
+        state,
+        session,
+        admin,
+        settings,
+        after_commit,
+        lines,
+        source="file",
+    )
 
 
 @router.callback_query(F.data == "adm:cards", IsOwner())
