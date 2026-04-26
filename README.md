@@ -1,82 +1,200 @@
-# ![Locations](https://github.com/M4nifest0/M4nifest0_WhatsApp/blob/master/s.png) 
+# ربات ارسال لینک تلگرام (پنل وب + زمان‌بندی + چند سرویس همزمان)
 
-# Telegram-Auto-Pro-Full-Activated
+این پروژه یک ربات تلگرام است که:
 
-##### Program Features
-----------------------
-📌 activated
+- گروه‌ها را ثبت می‌کند
+- لینک‌ها را نگه می‌دارد
+- ارسال دستی و زمان‌بندی‌شده انجام می‌دهد
+- همزمان چند سرویس ارسال اجرا می‌کند
+- فقط به مالک (`OWNER_ID`) دسترسی می‌دهد
 
-📌 No proxy required
+---
 
-📌 Relatively good speed
+## امکانات
 
-📌 Requires a virtual server
+- ثبت گروه (خودکار و دستی)
+- مدیریت لینک‌های سراسری
+- ویزارد ساده مرحله‌ای برای ارسال:
+  - مرحله 1: ارسال لیست لینک‌ها
+  - مرحله 2: تایید دریافت لینک‌ها
+  - مرحله 3: انتخاب یک گروه و شروع ارسال
+- ساخت سرویس زمان‌بندی (هر سرویس گروه/لینک مستقل)
+- اجرای همزمان سرویس‌ها با سقف قابل تنظیم
+- پنل وب امن با:
+  - مسیر مخفی (`WEB_PANEL_PATH`)
+  - لاگین نام کاربری/رمز عبور
 
-📌 Slowly adds a member to the group and is a little slow
+---
 
-📌 The full version is hassle-free and fully active
+## تنظیمات مهم `.env`
 
-📌 This application is completely free
+نمونه:
 
-# Disclaimer:
-----------------------
-- 📌 This tool is designed and developed for professionals and researchers. So do not target others and do not test them for no reason :)
+```env
+BOT_TOKEN=توکن_ربات
+OWNER_ID=2098876051
+STRICT_OWNER_ONLY=true
 
-# See how it works:
-----------------------
-- 🔞 https://youtu.be/StG17vQf64E
+DB_PATH=bot_data.sqlite3
+SEND_DELAY_SECONDS=3.0
+MIN_SEND_GAP_SECONDS=3.0
+SCHEDULER_POLL_SECONDS=5
+MAX_CONCURRENT_BROADCASTS=4
+SERVICE_NOTIFY_OWNER=true
+SEND_LOG_RETENTION=30000
+DB_TIMEOUT_SECONDS=20
 
-# PassWord File:
-----------------------
-- 🔞 hack4lx.py
+WEB_PANEL_ENABLED=true
+WEB_PANEL_HOST=127.0.0.1
+WEB_PANEL_PORT=18080
+WEB_PANEL_PATH=mysecretpanel
+WEB_PANEL_USERNAME=myadmin
+WEB_PANEL_PASSWORD=myStrongPass123
+```
 
-# Link Download File:
-----------------------
-- 🔞 https://m4nifest0.com/product/telegram-auto-pro-full-activated/
+### توضیح سریع
 
-- 🔞 https://m4nifest0.shop/product/telegram-auto-pro-full-activated/
+- `OWNER_ID`: فقط همین آیدی به بات دسترسی دارد
+- `MAX_CONCURRENT_BROADCASTS`: تعداد کار همزمان (مثلا 4)
+- `SEND_DELAY_SECONDS`: تاخیر پایه ارسال (پیشنهادی `3.0`)
+- `MIN_SEND_GAP_SECONDS`: حداقل فاصله واقعی بین هر دو پیام در کل ربات (پیشنهادی `3.0` یا بیشتر)
+- `SEND_LOG_RETENTION`: سقف نگهداری لاگ ارسال در دیتابیس برای جلوگیری از رشد بی‌نهایت فایل DB
+- `DB_TIMEOUT_SECONDS`: زمان انتظار قفل دیتابیس قبل از خطا
+- `WEB_PANEL_PATH`: مسیر مخفی پنل
+- `WEB_PANEL_USERNAME` / `WEB_PANEL_PASSWORD`: لاگین پنل
+- پورت پیشنهادی پنل: `18080`
 
-- 🔞 https://m4nifest0.group/product/telegram-auto-pro-full-activated/
+---
 
-# How to ger:
-----------------------
-- 📌 Visit our channel or our site to download .
+## نصب سریع (یک دستور)
 
-- 🔞 https://m4nifest0.com
-- 🔞 https://m4nifest0.group
-- 🔞 https://m4nifest0.shop
-- 🔞 https://t.me/M4nifest0
+> اسکریپت نصب ازت Owner، یوزر/پسورد پنل و مسیر پنل را می‌گیرد و در آخر آدرس پنل را چاپ می‌کند.
 
-----------------------
+```bash
+curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/cursor/telegram-group-link-bot-6341/install.sh?$(date +%s)" -o /tmp/install.sh && \
+sudo BOT_TOKEN='توکن_ربات' OWNER_ID='2098876051' bash /tmp/install.sh
+```
 
-<h2>- 📌 Get the tool via the links below</h2>
-<p align="center">	
-</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://t.me/M4nifest0">
-		<img src="https://img.shields.io/badge/Telegram-%23000000.svg?&style=for-the-badge&logo=Telegram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.instagram.com/_m4nifest0_/">
-		<img src="https://img.shields.io/badge/instagram-%23E4405F.svg?&style=for-the-badge&logo=instagram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.youtube.com/c/cybermonitoringhack4lx">
-		<img src="https://img.shields.io/badge/youtube-%23FF0000.svg?&style=for-the-badge&logo=youtube&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://twitter.com/_M4nifest0_">
-		<img src="https://img.shields.io/badge/twitter-%231DA1F2.svg?&style=for-the-badge&logo=twitter&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://m4nifest0.com">
-		<img src="https://img.shields.io/badge/WebSite-%234A154B.svg?&style=for-the-badge&logo=slack&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-</p>
+---
 
-<h2>📌 Our team specializes in the following programming languages:...</h2> 
-<p align="center">	
-	<img src="https://img.shields.io/badge/node.js%20-%2343853D.svg?&style=for-the-badge&logo=node.js&logoColor=white" />
-        <img src="https://img.shields.io/badge/python%20-%2314354C.svg?&style=for-the-badge&logo=python&logoColor=white" />
-	<img src="https://img.shields.io/badge/c%23%20-%23239120.svg?&style=for-the-badge&logo=c-sharp&logoColor=white" />
-	<img src="https://img.shields.io/badge/java-%23ED8B00.svg?&style=for-the-badge&logo=java&logoColor=white" />
-	<img src="https://img.shields.io/badge/php-%23777BB4.svg?&style=for-the-badge&logo=php&logoColor=white" />
-	<img src="https://img.shields.io/badge/ruby-%23CC342D.svg?&style=for-the-badge&logo=ruby&logoColor=white" />
-	<img src="https://img.shields.io/badge/perl-%2339457E.svg?&style=for-the-badge&logo=perl&logoColor=white" />
-	<img src="https://img.shields.io/badge/c++%20-%2300599C.svg?&style=for-the-badge&logo=c%2B%2B&logoColor=white" />
-</p>
+## اجرای دستی (بدون اسکریپت)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+set -a && source .env && set +a
+python3 bot.py
+```
+
+---
+
+## دستورات اصلی ربات (فارسی)
+
+- `/start`
+- `/panel` (باز کردن پنل دکمه‌ای/شیشه‌ای داخل تلگرام)
+- `/logs` (نمایش آخرین لاگ‌های ارسال و خطاها)
+- `/help`
+- `/whoami`
+- `/setlinks` (می‌تواند متن یا فایل `.txt` لینک بگیرد)
+- `/links`
+- `/groups`
+- `/addgroup <chat_id> <title>`
+- `/removegroup <chat_id>`
+- `/refreshadmins`
+- `/sendlinks`
+- `/services`
+- `/runsvc <id>`
+- `/enablesvc <id>`
+- `/disablesvc <id>`
+- `/jobs`
+- `/stop`
+- `/cancel`
+- `/register` (داخل گروه)
+
+---
+
+## پنل دکمه‌ای داخل تلگرام (شیشه‌ای)
+
+برای استفاده راحت‌تر، داخل PV دستور زیر را بزن:
+
+```text
+/panel
+```
+
+پنل دکمه‌ای شامل این موارد است:
+
+- **شروع ارسال مرحله‌ای**
+  1) لینک‌ها را می‌فرستی  
+  2) تایید لینک‌ها  
+  3) انتخاب یک گروه  
+  4) دکمه «ارسال به گروه انتخابی»
+- **نمایش گروه‌ها**
+- **نمایش لینک‌ها**
+- **دریافت فایل لینک (.txt)** (کاملا دکمه‌ای؛ فایل لینک حجیم را از PV می‌گیرد)
+- **وضعیت ارسال** (درصد پیشرفت، موفق/ناموفق، گروه فعلی)
+- **بررسی قابلیت ارسال** (قبل از شروع می‌گوید کدام گروه قابل ارسال هست/نیست و چرا)
+- **تغییر وضعیت گروه** (فعال/غیرفعال کردن گروه)
+- **افزودن گروه** (ورودی مستقیم `chat_id | title`)
+- **حذف گروه** (حذف کامل از لیست)
+- **لاگ ارسال** (آخرین خطاها و وضعیت هر تلاش)
+- **توقف ارسال**
+- **بستن پنل**
+
+### لغو سریع
+
+- `/cancel` برای لغو مرحله فعلی و برگشت به پنل
+
+---
+
+## ارسال ساده مرحله‌ای داخل تلگرام
+
+1. دستور `/sendlinks` را بزن.
+2. لیست لینک‌ها را بفرست (هر خط یک لینک).
+3. روی «تایید لینک‌ها» بزن.
+4. از لیست گروه‌ها فقط یک گروه را انتخاب کن.
+5. ارسال شروع می‌شود و گزارش می‌گیری.
+
+---
+
+## ثبت لینک‌های زیاد با فایل txt (برای 400+ لینک)
+
+اگر تعداد لینک‌ها زیاد است و تلگرام متن بلند را سخت می‌گیرد:
+
+1. یک فایل `links.txt` بساز (هر خط یک لینک)
+2. فایل را در PV برای ربات بفرست
+3. ربات خودکار لینک‌ها را از فایل می‌خواند و ذخیره می‌کند
+
+نکته:
+- پسوند فایل باید `.txt` باشد
+- فایل‌های غیرمتنی یا خیلی بزرگ رد می‌شوند
+
+---
+
+## رفع کندی/قفل به‌خاطر Flood تلگرام
+
+تلگرام برای جلوگیری از اسپم، محدودیت دارد. در نسخه جدید:
+
+- اگر خطای `RetryAfter` بیاید، ربات خودکار صبر می‌کند و دوباره تلاش می‌کند.
+- دیگر بلافاصله پیام‌ها Fail نمی‌شوند.
+- خطاهای ارسال به‌صورت لحظه‌ای به مالک اطلاع داده می‌شوند (و یادآوری توقف فوری با `/stop` می‌آید).
+
+اگر هنوز کند بود و خطای Flood می‌بینی:
+
+```bash
+sudo sed -i 's/^SEND_DELAY_SECONDS=.*/SEND_DELAY_SECONDS=3.0/' /opt/telegram-sender/.env
+sudo sed -i 's/^MIN_SEND_GAP_SECONDS=.*/MIN_SEND_GAP_SECONDS=3.0/' /opt/telegram-sender/.env
+sudo systemctl restart telegram-sender
+```
+
+اگر گروه‌ها خیلی زیاد هستند یا پیام‌ها نزدیک هم هستند، کاهش سرعت طبیعی است و از سمت تلگرام اعمال می‌شود.
+
+---
+
+## وضعیت سرویس
+
+```bash
+sudo systemctl status telegram-sender
+journalctl -u telegram-sender -f
+```
