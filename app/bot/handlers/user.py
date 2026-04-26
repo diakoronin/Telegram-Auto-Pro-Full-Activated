@@ -644,7 +644,7 @@ async def cb_shop(callback: CallbackQuery, session: AsyncSession, settings: Sett
         return
     buttons = []
     for srv, pl in rows:
-        n = await count_unused_for_plan(session, plan_id=pl.id)
+        n = await count_unused_for_plan(session, server_id=srv.id, plan_id=pl.id)
         price_s = format_money_toman(int(pl.price))
         if n <= 0:
             label = f"📦 {pl.name} | {price_s} تومان | ناموجود ❌"
@@ -685,7 +685,7 @@ async def cb_buy(
     if plan is None or not plan.is_active:
         await callback.answer("پلن نامعتبر است.", show_alert=True)
         return
-    stock_n = await count_unused_for_plan(session, plan_id=plan.id)
+    stock_n = await count_unused_for_plan(session, server_id=plan.server_id, plan_id=plan.id)
     if stock_n <= 0:
         await callback.answer(T.STOCK_OUT_USER, show_alert=True)
         return

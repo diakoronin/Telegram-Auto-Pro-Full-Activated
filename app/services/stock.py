@@ -94,10 +94,17 @@ async def get_all_servers_stock_summary(
     return lines
 
 
-async def count_unused_for_plan(session: AsyncSession, *, plan_id: int) -> int:
+async def count_unused_for_plan(
+    session: AsyncSession, *, server_id: int, plan_id: int
+) -> int:
+    """Must match :func:`pick_unused_link` (same server_id + plan_id + UNUSED)."""
     r = await session.execute(
         select(func.count())
         .select_from(Link)
-        .where(Link.plan_id == plan_id, Link.status == LinkStatus.UNUSED)
+        .where(
+            Link.server_id == server_id,
+            Link.plan_id == plan_id,
+            Link.status == LinkStatus.UNUSED,
+        )
     )
     return int(r.scalar_one() or 0)
