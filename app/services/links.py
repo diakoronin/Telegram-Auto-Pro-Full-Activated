@@ -47,6 +47,10 @@ async def purchase_plan_for_user(
     if srv is None or not srv.is_active:
         return False, None, "سرور غیرفعال است.", None
 
+    # Lock plan first so concurrent purchases for the same plan are serialized.
+    # (Avoids races / deadlocks between User row lock and Link row locks.)
+    await session.execute(select(Plan).where(Plan.id == plan.id).with_for_update())
+
     u = await session.execute(
         select(User).where(User.id == user.id).with_for_update()
     )

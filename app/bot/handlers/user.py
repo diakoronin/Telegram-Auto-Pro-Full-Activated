@@ -711,9 +711,9 @@ async def cb_buy(
             target_id=str(plan_id),
             metadata={"error": err},
         )
-        if err and "موجودی" in err:
+        if err and "لینک تمام" in (err or ""):
             await callback.answer(T.STOCK_OUT_USER, show_alert=True)
-        elif err and "موجودی کافی" in err:
+        elif err and "موجودی کافی" in (err or ""):
             await callback.answer(
                 "موجودی کیف پول کافی نیست. از بخش «شارژ حساب» اقدام کنید.",
                 show_alert=True,
