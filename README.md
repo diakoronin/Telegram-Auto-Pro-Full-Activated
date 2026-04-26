@@ -1,82 +1,80 @@
-# ![Locations](https://github.com/M4nifest0/M4nifest0_WhatsApp/blob/master/s.png) 
+# ربات فروش سرویس VPN (تلگرام)
 
-# Telegram-Auto-Pro-Full-Activated
+ربات فروش حرفه‌ای با **دو سیسته جدا**:
 
-##### Program Features
-----------------------
-📌 activated
+1. **سیستم اصلی API** — اتصال به پنل Marzban و Sanaei/3x-ui، کنترل مرکزی حجم، لینک اشتراک ثابت روی دامنه شما (`/sub/{token}`).
+2. **سیستم دستی** — ایمپورت لینک، تحویل توسط ادمین، بدون همگام‌سازی حجم با API.
 
-📌 No proxy required
+## پیش‌نیازها
 
-📌 Relatively good speed
+- Python 3.11+
+- PostgreSQL (پیشنهادی برای production)
+- توکن ربات، شناسه عددی مالک، کلید رمزنگاری پنل
 
-📌 Requires a virtual server
+## نصب سریع
 
-📌 Slowly adds a member to the group and is a little slow
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+chmod 600 .env
+# مقادیر را پر کنید
+python3 main.py
+```
 
-📌 The full version is hassle-free and fully active
+اجرای تست‌ها:
 
-📌 This application is completely free
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest tests -q
+```
 
-# Disclaimer:
-----------------------
-- 📌 This tool is designed and developed for professionals and researchers. So do not target others and do not test them for no reason :)
+## systemd
 
-# See how it works:
-----------------------
-- 🔞 https://youtu.be/StG17vQf64E
+فایل نمونه: `deploy/telegram-vpn-bot.service` — مسیر `/opt/sakabot` و کاربر `sakabot` را با محیط خود تطبیق دهید.
 
-# PassWord File:
-----------------------
-- 🔞 hack4lx.py
+```bash
+sudo cp deploy/telegram-vpn-bot.service /etc/systemd/system/telegram-vpn-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now telegram-vpn-bot
+journalctl -u telegram-vpn-bot -f
+```
 
-# Link Download File:
-----------------------
-- 🔞 https://m4nifest0.com/product/telegram-auto-pro-full-activated/
+## پایگاه داده و migration
 
-- 🔞 https://m4nifest0.shop/product/telegram-auto-pro-full-activated/
+هنگام بالا آمدن برنامه، migration به‌صورت خودکار اجرا می‌شود. برای اجرای دستی از `bot-manager.sh` گزینه ۲۶ استفاده کنید.
 
-- 🔞 https://m4nifest0.group/product/telegram-auto-pro-full-activated/
+## nginx و SSL
 
-# How to ger:
-----------------------
-- 📌 Visit our channel or our site to download .
+- API اشتراک روی `127.0.0.1:8080` (قابل تنظیم با `SUBSCRIPTION_API_HOST` / `SUBSCRIPTION_API_PORT`).
+- nginx باید `https://your-domain/sub/` را به همان پورت پروکسی کند (نمونه در `bot-manager.sh` گزینه ۳۳).
+- SSL: `certbot --nginx -d your-domain.com`
 
-- 🔞 https://m4nifest0.com
-- 🔞 https://m4nifest0.group
-- 🔞 https://m4nifest0.shop
-- 🔞 https://t.me/M4nifest0
+## TelegramConflictError
 
-----------------------
+اگر همزمان webhook و polling فعال باشد، خطای conflict رخ می‌دهد. برنامه هنگام شروع `delete_webhook(drop_pending_updates=True)` را صدا می‌زند. مطمئن شوید جای دیگری با همین توکن polling نمی‌زند.
 
-<h2>- 📌 Get the tool via the links below</h2>
-<p align="center">	
-</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://t.me/M4nifest0">
-		<img src="https://img.shields.io/badge/Telegram-%23000000.svg?&style=for-the-badge&logo=Telegram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.instagram.com/_m4nifest0_/">
-		<img src="https://img.shields.io/badge/instagram-%23E4405F.svg?&style=for-the-badge&logo=instagram&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://www.youtube.com/c/cybermonitoringhack4lx">
-		<img src="https://img.shields.io/badge/youtube-%23FF0000.svg?&style=for-the-badge&logo=youtube&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://twitter.com/_M4nifest0_">
-		<img src="https://img.shields.io/badge/twitter-%231DA1F2.svg?&style=for-the-badge&logo=twitter&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-	<a href="https://m4nifest0.com">
-		<img src="https://img.shields.io/badge/WebSite-%234A154B.svg?&style=for-the-badge&logo=slack&logoColor=white" />
-	</a>&nbsp;&nbsp;&nbsp;&nbsp;
-</p>
+## بکاپ
 
-<h2>📌 Our team specializes in the following programming languages:...</h2> 
-<p align="center">	
-	<img src="https://img.shields.io/badge/node.js%20-%2343853D.svg?&style=for-the-badge&logo=node.js&logoColor=white" />
-        <img src="https://img.shields.io/badge/python%20-%2314354C.svg?&style=for-the-badge&logo=python&logoColor=white" />
-	<img src="https://img.shields.io/badge/c%23%20-%23239120.svg?&style=for-the-badge&logo=c-sharp&logoColor=white" />
-	<img src="https://img.shields.io/badge/java-%23ED8B00.svg?&style=for-the-badge&logo=java&logoColor=white" />
-	<img src="https://img.shields.io/badge/php-%23777BB4.svg?&style=for-the-badge&logo=php&logoColor=white" />
-	<img src="https://img.shields.io/badge/ruby-%23CC342D.svg?&style=for-the-badge&logo=ruby&logoColor=white" />
-	<img src="https://img.shields.io/badge/perl-%2339457E.svg?&style=for-the-badge&logo=perl&logoColor=white" />
-	<img src="https://img.shields.io/badge/c++%20-%2300599C.svg?&style=for-the-badge&logo=c%2B%2B&logoColor=white" />
-</p>
+با `AUTO_BACKUP_ENABLED=true` و دیتابیس PostgreSQL، بکاپ فشرده ساخته می‌شود و در صورت اندازه مناسب به چت خصوصی `OWNER_ID` ارسال می‌گردد؛ نگهداری محلی در پوشه `backups/` با سیاست نگهداری ساعتی/روزانه.
+
+## bot-manager
+
+اسکریپت تعاملی VPS:
+
+```bash
+sudo ./bot-manager.sh
+```
+
+## پنل Marzban و 3x-ui
+
+جزئیات اتصال و نکات امنیتی در `docs/API_PANELS.md`.
+
+## حالت دستی
+
+راهنمای ایمپورت TXT و تحویل در `docs/MANUAL_MODE.md`.
+
+## عملیات و عیب‌یابی
+
+`docs/OPERATIONS.md`

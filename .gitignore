@@ -30,3 +30,15 @@
 *.exe
 *.out
 *.app
+
+# App
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+logs/
+backups/
+*.sql
+*.sql.gz

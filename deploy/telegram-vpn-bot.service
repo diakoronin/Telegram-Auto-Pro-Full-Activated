@@ -1,0 +1,21 @@
+[Unit]
+Description=Telegram VPN sales bot (aiogram + subscription API)
+After=network-online.target
+Wants=network-online.target
+After=postgresql.service
+RequiresMountsFor=/var/lib
+
+[Service]
+Type=simple
+User=sakabot
+Group=sakabot
+WorkingDirectory=/opt/sakabot
+EnvironmentFile=-/opt/sakabot/.env
+ExecStart=/opt/sakabot/venv/bin/python3 /opt/sakabot/main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
