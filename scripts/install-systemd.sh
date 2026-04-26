@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-UNIT_NAME="${UNIT_NAME:-telegram-sales-bot.service}"
+UNIT_NAME="${UNIT_NAME:-${SAKA_BOT_UNIT:-telegram-sales-bot.service}}"
 RUN_USER="${RUN_USER:-${SUDO_USER:-$(logname 2>/dev/null || echo root)}}"
 
 if [[ "$(id -u)" -ne 0 ]]; then

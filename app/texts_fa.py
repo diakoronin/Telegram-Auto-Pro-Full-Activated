@@ -1,4 +1,4 @@
-# User-facing Persian copy. Identifier names stay ASCII per project rules.
+# User-facing Persian strings (buttons and messages). ASCII identifiers only.
 
 BLOCKED_USER = "حساب شما مسدود است. در صورت نیاز با پشتیبانی تماس بگیرید."
 GENERIC_ERROR = "خطایی رخ داد. لطفاً بعداً دوباره تلاش کنید."
@@ -70,3 +70,34 @@ BACKUP_SENT = "فایل پشتیبان ارسال شد."
 
 REFUND_OK = "بازپرداخت انجام شد."
 REFUND_ONCE = "این خرید قبلاً بازپرداخت شده است."
+
+# Card access (admin)
+CARD_ACCESS_MENU_TEXT = (
+    "تأیید دسترسی مشاهدهٔ شماره کارت برای کاربر:\n"
+    "۱) یک پیام از کاربر را به همین ربات فوروارد کنید، یا\n"
+    "۲) شناسهٔ عددی تلگرام کاربر را بفرستید.\n"
+    "برای لغو از دکمهٔ بازگشت استفاده کنید."
+)
+CARD_ACCESS_BTN_FORWARD_MODE = "حالت فوروارد"
+CARD_ACCESS_BTN_NUMERIC_ID = "شناسهٔ عددی"
+CARD_ACCESS_BTN_REVOKE = "لغو دسترسی کاربر"
+CARD_ACCESS_BTN_BACK = "بازگشت"
+CARD_ACCESS_FWD_INSTRUCTION = (
+    "یک پیام از کاربر را به این چت فوروارد کنید (باید فرستنده مشخص باشد؛ "
+    "فوروارد ناشناس قابل تأیید نیست)."
+)
+CARD_ACCESS_ASK_TID = "شناسهٔ عددی تلگرام کاربر را بفرستید:"
+CARD_ACCESS_ASK_REVOKE_TID = "شناسهٔ عددی تلگرام کاربری که باید دسترسی کارت‌اش قطع شود:"
+CARD_ACCESS_NEED_FORWARD = "لطفاً یک پیام فورواردشده از کاربر بفرستید یا دکمهٔ لغو را بزنید."
+CARD_ACCESS_HIDDEN_FORWARD = (
+    "فرستندهٔ این فوروارد مشخص نیست. از فوروارد ناشناس استفاده نکنید "
+    "یا از گزینهٔ شناسهٔ عددی استفاده کنید."
+)
+CARD_ACCESS_INVALID_TID = "شناسهٔ نامعتبر است."
+CARD_ACCESS_USER_NOT_IN_BOT = "کاربر در ربات ثبت نشده است."
+CARD_ACCESS_REVOKE_CONFIRM_EXTRA = "قطع دسترسی مشاهدهٔ کارت برای این کاربر؟"
+CARD_ACCESS_BTN_CONFIRM_REVOKE = "تأیید قطع"
+CARD_ACCESS_BTN_CANCEL = "لغو"
+CARD_ACCESS_USER_BLOCKED = "این کاربر مسدود است؛ ابتدا رفع مسدودیت کنید."
+CARD_ACCESS_GRANT_CONFIRM_EXTRA = "فعال‌سازی دسترسی مشاهدهٔ شماره کارت؟"
+CARD_ACCESS_BTN_CONFIRM_GRANT = "تأیید دسترسی"

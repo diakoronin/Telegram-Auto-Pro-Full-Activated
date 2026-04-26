@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+# saka-bot — install / update / systemd / DB password / .env helpers (ASCII only).
+# Symlink to /usr/local/bin after clone:  sudo ln -sf /path/to/repo/scripts/saka-bot /usr/local/bin/saka-bot
+# Or set:  export SAKA_BOT_ROOT=/path/to/repo
+
+set -euo pipefail
+
+UNIT="${SYSTEMD_UNIT:-telegram-sales-bot.service}"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+log() { echo "[saka-bot] $*"; }
+
+resolve_root() {
+  if [[ -n "${SAKA_BOT_ROOT:-}" ]]; then
+    echo "$(cd "$SAKA_BOT_ROOT" && pwd)"
+    return
+  fi
+  local self real
+  self="${BASH_SOURCE[0]}"
+  real="$(readlink -f "$self" 2>/dev/null || echo "$self")"
+  local dir
+  dir="$(cd "$(dirname "$real")/.." && pwd)"
+  if [[ -f "$dir/main.py" && -f "$dir/requirements.txt" ]]; then
+    echo "$dir"
+    return
+  fi
+  for c in /opt/telegram-sales-bot "$HOME/telegram-sales-bot" /root/telegram-sales-bot; do
+    if [[ -f "$c/main.py" ]]; then
+      echo "$c"
+      return
+    fi
+  done
+  die "Set SAKA_BOT_ROOT or run from repo (main.py not found)."
+}
+
+run_sctl() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    systemctl "$@"
+  else
+    sudo systemctl "$@"
+  fi
+}
+
+run_journal() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    journalctl "$@"
+  else
+    sudo journalctl "$@"
+  fi
+}
+
+ROOT="$(resolve_root)"
+cd "$ROOT"
+[[ -f main.py ]] || die "Not a bot install: $ROOT"
+
+usage() {
+  cat <<'EOF'
+Usage: saka-bot <command>
+
+  install       Run full server install (sudo + curl install.sh). Set REPO_URL, BRANCH, INSTALL_DIR env.
+  update        git pull + pip + safe restart (scripts/update.sh)
+  reinstall     Same as update (alias)
+  restart       systemctl restart
+  start         systemctl start
+  stop          systemctl stop
+  status        systemctl status
+  logs          journalctl -n 80 (add -f for follow: saka-bot logs -f)
+  diagnose      scripts/diagnose.sh
+  db-password   Change Postgres role password from DATABASE_URL in .env (needs sudo)
+  set-token     Prompt (hidden) and set BOT_TOKEN in .env
+  set-owner     Prompt and set OWNER_ID in .env
+  env-show      Print .env keys (values masked) — no secrets
+  help          This text
+
+Examples:
+  export SAKA_BOT_ROOT=/root/telegram-sales-bot
+  saka-bot update
+  saka-bot logs -f
+  sudo ln -sf /root/telegram-sales-bot/scripts/saka-bot /usr/local/bin/saka-bot
+EOF
+}
+
+cmd_update() {
+  [[ -f scripts/update.sh ]] || die "scripts/update.sh missing. git pull first."
+  exec bash scripts/update.sh
+}
+
+cmd_db_password() {
+  [[ -f .env ]] || die ".env missing"
+  if [[ "$(id -u)" -ne 0 ]]; then
+    die "Run: sudo saka-bot db-password"
+  fi
+  command -v psql >/dev/null || die "Install postgresql-client"
+  [[ -r /dev/tty ]] || die "Need a TTY"
+  python3 <<'PY' || die "db-password failed"
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import quote, unquote, urlparse
+
+def load_env(path):
+    d = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        d[k.strip()] = v.strip()
+    return d
+
+env = load_env(Path(".env"))
+url = env.get("DATABASE_URL", "")
+if not url.startswith("postgresql+asyncpg://"):
+    print("DATABASE_URL must start with postgresql+asyncpg://", file=sys.stderr)
+    sys.exit(1)
+u = urlparse(url.replace("postgresql+asyncpg", "postgresql", 1))
+user = unquote(u.username or "")
+if not user:
+    print("no user in DATABASE_URL", file=sys.stderr)
+    sys.exit(1)
+newp = input("New database password for role %r: " % (user,))
+if len(newp) < 8:
+    print("password too short (min 8)", file=sys.stderr)
+    sys.exit(1)
+ep = newp.replace("'", "''")
+subprocess.run(
+    [
+        "sudo",
+        "-u",
+        "postgres",
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        'ALTER ROLE "%s" WITH PASSWORD \'%s\';' % (user.replace('"', ""), ep),
+    ],
+    check=True,
+)
+host = u.hostname or "127.0.0.1"
+port = u.port or 5432
+db = (u.path or "/").lstrip("/")
+nu = "postgresql+asyncpg://%s:%s@%s:%s/%s" % (
+    quote(user, safe=""),
+    quote(newp, safe=""),
+    host,
+    port,
+    quote(db, safe=""),
+)
+text = Path(".env").read_text(encoding="utf-8")
+lines = []
+for line in text.splitlines():
+    if line.startswith("DATABASE_URL="):
+        lines.append("DATABASE_URL=" + nu)
+    else:
+        lines.append(line)
+Path(".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+Path(".env").chmod(0o600)
+print("OK: ALTER ROLE and .env updated. Run: saka-bot restart")
+PY
+}
+
+cmd_set_token() {
+  [[ -f .env ]] || die ".env missing"
+  [[ -r /dev/tty ]] || die "Need a TTY for hidden input"
+  printf "New BOT_TOKEN: " > /dev/tty
+  read -rs tok < /dev/tty || true
+  printf "\n" > /dev/tty
+  [[ -n "${tok:-}" ]] || die "empty token"
+  BOT_TOKEN="$tok" ROOT="$ROOT" python3 <<'PY'
+import os
+from pathlib import Path
+root = Path(os.environ["ROOT"])
+tok = os.environ["BOT_TOKEN"]
+p = root / ".env"
+lines = []
+for line in p.read_text(encoding="utf-8").splitlines():
+    if line.startswith("BOT_TOKEN="):
+        lines.append("BOT_TOKEN=" + tok)
+    else:
+        lines.append(line)
+p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+p.chmod(0o600)
+print("OK: BOT_TOKEN updated. Run: saka-bot restart")
+PY
+}
+
+cmd_set_owner() {
+  [[ -f .env ]] || die ".env missing"
+  read -r -p "New OWNER_ID (numeric Telegram id): " oid
+  [[ -n "${oid:-}" ]] || die "empty"
+  OWNER_ID="$oid" ROOT="$ROOT" python3 <<'PY'
+import os
+from pathlib import Path
+root = Path(os.environ["ROOT"])
+oid = os.environ["OWNER_ID"].strip()
+p = root / ".env"
+lines = []
+for line in p.read_text(encoding="utf-8").splitlines():
+    if line.startswith("OWNER_ID="):
+        lines.append("OWNER_ID=" + oid)
+    else:
+        lines.append(line)
+p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+p.chmod(0o600)
+print("OK: OWNER_ID updated. Run: saka-bot restart")
+PY
+}
+
+cmd_env_show() {
+  [[ -f .env ]] || die ".env missing"
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+    if [[ "$line" =~ ^(BOT_TOKEN|DATABASE_URL|OWNER_ID)= ]]; then
+      k="${line%%=*}"
+      echo "$k=(set, hidden)"
+    else
+      echo "$line"
+    fi
+  done < .env
+}
+
+cmd_install() {
+  log "First-time server install (see README). Examples:"
+  echo "  sudo bash $ROOT/scripts/install.sh /opt/telegram-sales-bot main"
+  echo "  curl -fsSL \"https://raw.githubusercontent.com/USER/REPO/\${BR}/scripts/quick.sh\" | bash -s -- \$HOME/telegram-sales-bot \$BR"
+  echo "After install: sudo ln -sf $ROOT/scripts/saka-bot /usr/local/bin/saka-bot"
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    install) cmd_install ;;
+    update|reinstall) cmd_update ;;
+    restart) run_sctl restart "$UNIT" ;;
+    start) run_sctl start "$UNIT" ;;
+    stop) run_sctl stop "$UNIT" ;;
+    status) run_sctl status "$UNIT" --no-pager ;;
+    logs)
+      if [[ "${1:-}" == "-f" ]]; then
+        run_journal -u "$UNIT" -f
+      else
+        run_journal -u "$UNIT" -n 80 --no-pager
+      fi
+      ;;
+    diagnose)
+      [[ -f scripts/diagnose.sh ]] || die "scripts/diagnose.sh missing"
+      bash scripts/diagnose.sh "$ROOT"
+      ;;
+    db-password) cmd_db_password ;;
+    set-token) cmd_set_token ;;
+    set-owner) cmd_set_owner ;;
+    env-show) cmd_env_show ;;
+    help|-h|--help|"") usage ;;
+    *) die "unknown command: $cmd (try: saka-bot help)" ;;
+  esac
+}
+
+main "$@"

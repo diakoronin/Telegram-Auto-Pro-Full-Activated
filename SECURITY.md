@@ -56,7 +56,7 @@ Roles are stored in the `admins` table (`owner`, `manager`, `seller`). The Teleg
 ## Payment card visibility (per-user gate)
 
 - Active `payment_cards` rows are sensitive. Regular users only see masked numbers **after** `users.card_view_allowed` is `true`.
-- **Owner or manager** grants access from the admin panel (**دسترسی کارت برای کاربر**): confirm via a forwarded user message (real `sender_user` required — anonymous forward is rejected) **or** by numeric Telegram user id, then **two-step confirmation** (`acf:`) and audit (`card_view_granted` / `card_view_revoked`).
+- **Owner or manager** grants access from the admin panel (**Card access for user**): confirm via a forwarded user message (real `sender_user` required — anonymous forward is rejected) **or** by numeric Telegram user id, then **two-step confirmation** (`acf:`) and audit (`card_view_granted` / `card_view_revoked`).
 - Revocation clears the flag and notifies the user after commit.
 - The charge receipt flow appends card lines **only** if the payer already has `card_view_allowed`, so unknown users never receive numbers in that path.
 

@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-UNIT="${SYSTEMD_UNIT:-telegram-sales-bot.service}"
+UNIT="${SYSTEMD_UNIT:-${SAKA_BOT_UNIT:-telegram-sales-bot.service}}"
 MAIN="${ROOT}/main.py"
 
 log() { printf '%s\n' "[update] $*"; }

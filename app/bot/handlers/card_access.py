@@ -12,7 +12,6 @@ from app import texts_fa as T
 from app.bot.filters import IsManagerOrOwner
 from app.bot.states import AdminStates
 from app.db.models import Admin
-from app.services.audit import write_audit
 from app.services.confirmations import create_confirmation
 from app.services.users import get_or_create_user, get_user_by_telegram
 
@@ -51,16 +50,13 @@ def _forwarded_user_telegram_id(message: Message) -> int | None:
 @router.callback_query(F.data == "adm:card_access_menu", IsManagerOrOwner())
 async def cb_card_access_menu(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
-        "تأیید دسترسی مشاهدهٔ شماره کارت برای کاربر:\n"
-        "۱) یک پیام از کاربر را به همین ربات فوروارد کنید، یا\n"
-        "۲) شناسهٔ عددی تلگرام کاربر را بفرستید.\n"
-        "برای لغو از دکمهٔ بازگشت استفاده کنید.",
+        T.CARD_ACCESS_MENU_TEXT,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="حالت فوروارد", callback_data="adm:ca_fwd")],
-                [InlineKeyboardButton(text="شناسهٔ عددی", callback_data="adm:ca_tid")],
-                [InlineKeyboardButton(text="لغو دسترسی کاربر", callback_data="adm:ca_revoke")],
-                [InlineKeyboardButton(text="بازگشت", callback_data="admin_home")],
+                [InlineKeyboardButton(text=T.CARD_ACCESS_BTN_FORWARD_MODE, callback_data="adm:ca_fwd")],
+                [InlineKeyboardButton(text=T.CARD_ACCESS_BTN_NUMERIC_ID, callback_data="adm:ca_tid")],
+                [InlineKeyboardButton(text=T.CARD_ACCESS_BTN_REVOKE, callback_data="adm:ca_revoke")],
+                [InlineKeyboardButton(text=T.CARD_ACCESS_BTN_BACK, callback_data="admin_home")],
             ]
         ),
     )
@@ -71,11 +67,10 @@ async def cb_card_access_menu(callback: CallbackQuery) -> None:
 async def cb_ca_forward_mode(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.card_access_forward_wait)
     await callback.message.answer(
-        "یک پیام از کاربر را به این چت فوروارد کنید (باید فرستنده مشخص باشد؛ "
-        "فوروارد ناشناس قابل تأیید نیست).",
+        T.CARD_ACCESS_FWD_INSTRUCTION,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="لغو", callback_data="admin_cancel_fsm")]
+                [InlineKeyboardButton(text=T.CARD_ACCESS_BTN_CANCEL, callback_data="admin_cancel_fsm")]
             ]
         ),
     )
@@ -86,10 +81,10 @@ async def cb_ca_forward_mode(callback: CallbackQuery, state: FSMContext) -> None
 async def cb_ca_tid_mode(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.card_access_tid_wait)
     await callback.message.answer(
-        "شناسهٔ عددی تلگرام کاربر را بفرستید:",
+        T.CARD_ACCESS_ASK_TID,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="لغو", callback_data="admin_cancel_fsm")]
+                [InlineKeyboardButton(text=T.CARD_ACCESS_BTN_CANCEL, callback_data="admin_cancel_fsm")]
             ]
         ),
     )
@@ -100,10 +95,10 @@ async def cb_ca_tid_mode(callback: CallbackQuery, state: FSMContext) -> None:
 async def cb_ca_revoke_mode(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.card_access_revoke_tid)
     await callback.message.answer(
-        "شناسهٔ عددی تلگرام کاربری که باید دسترسی کارت‌اش قطع شود:",
+        T.CARD_ACCESS_ASK_REVOKE_TID,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="لغو", callback_data="admin_cancel_fsm")]
+                [InlineKeyboardButton(text=T.CARD_ACCESS_BTN_CANCEL, callback_data="admin_cancel_fsm")]
             ]
         ),
     )
@@ -123,16 +118,11 @@ async def msg_card_access_forward(
         and message.forward_from is None
         and message.forward_from_chat is None
     ):
-        await message.answer(
-            "لطفاً یک پیام فورواردشده از کاربر بفرستید یا دکمهٔ لغو را بزنید."
-        )
+        await message.answer(T.CARD_ACCESS_NEED_FORWARD)
         return
     tid = _forwarded_user_telegram_id(message)
     if tid is None:
-        await message.answer(
-            "فرستندهٔ این فوروارد مشخص نیست. از فوروارد ناشناس استفاده نکنید "
-            "یا از گزینهٔ شناسهٔ عددی استفاده کنید."
-        )
+        await message.answer(T.CARD_ACCESS_HIDDEN_FORWARD)
         return
     await _propose_card_access(
         message,
@@ -156,10 +146,10 @@ async def msg_card_access_tid(
     try:
         tid = int((message.text or "").strip())
     except ValueError:
-        await message.answer("شناسهٔ نامعتبر است.")
+        await message.answer(T.CARD_ACCESS_INVALID_TID)
         return
     if tid <= 0:
-        await message.answer("شناسهٔ نامعتبر است.")
+        await message.answer(T.CARD_ACCESS_INVALID_TID)
         return
     await _propose_card_access(
         message,
@@ -183,11 +173,11 @@ async def msg_card_access_revoke_tid(
     try:
         tid = int((message.text or "").strip())
     except ValueError:
-        await message.answer("شناسهٔ نامعتبر است.")
+        await message.answer(T.CARD_ACCESS_INVALID_TID)
         return
     u = await get_user_by_telegram(session, tid)
     if u is None:
-        await message.answer("کاربر در ربات ثبت نشده است.")
+        await message.answer(T.CARD_ACCESS_USER_NOT_IN_BOT)
         await state.clear()
         return
     cid = await create_confirmation(
@@ -198,12 +188,12 @@ async def msg_card_access_revoke_tid(
     )
     await state.clear()
     await message.answer(
-        T.CONFIRM_PROMPT + "\nقطع دسترسی مشاهدهٔ کارت برای این کاربر؟",
+        T.CONFIRM_PROMPT + "\n" + T.CARD_ACCESS_REVOKE_CONFIRM_EXTRA,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="تأیید قطع", callback_data=f"acf:{cid}"),
-                    InlineKeyboardButton(text="لغو", callback_data="noop"),
+                    InlineKeyboardButton(text=T.CARD_ACCESS_BTN_CONFIRM_REVOKE, callback_data=f"acf:{cid}"),
+                    InlineKeyboardButton(text=T.CARD_ACCESS_BTN_CANCEL, callback_data="noop"),
                 ]
             ]
         ),
@@ -222,7 +212,7 @@ async def _propose_card_access(
 ) -> None:
     u = await get_or_create_user(session, target_telegram_id, None)
     if u.is_blocked:
-        await message.answer("این کاربر مسدود است؛ ابتدا رفع مسدودیت کنید.")
+        await message.answer(T.CARD_ACCESS_USER_BLOCKED)
         await state.clear()
         return
     cid = await create_confirmation(
@@ -237,18 +227,19 @@ async def _propose_card_access(
     )
     await state.clear()
     await message.answer(
-        f"کاربر: telegram_id={target_telegram_id} db_id={u.id}\n"
+        f"User: telegram_id={target_telegram_id} db_id={u.id}\n"
         + T.CONFIRM_PROMPT
-        + "\nفعال‌سازی دسترسی مشاهدهٔ شماره کارت؟",
+        + "\n"
+        + T.CARD_ACCESS_GRANT_CONFIRM_EXTRA,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="تأیید دسترسی", callback_data=f"acf:{cid}"),
-                    InlineKeyboardButton(text="لغو", callback_data="noop"),
+                    InlineKeyboardButton(text=T.CARD_ACCESS_BTN_CONFIRM_GRANT, callback_data=f"acf:{cid}"),
+                    InlineKeyboardButton(text=T.CARD_ACCESS_BTN_CANCEL, callback_data="noop"),
                 ]
             ]
         ),
     )
 
 
-# Note: grant/revoke execution lives in admin.py admin_cf_router alongside other acf: actions.
+# Grant/revoke execution: admin.py admin_cf_router (acf:)

@@ -2,20 +2,49 @@
 
 Python 3.11+ bot built with **aiogram 3** and **SQLAlchemy 2 (async)**. Wallet charges go through **pending payment requests** with **row-locked approve/reject**; purchases reserve a link with **`SELECT … FOR UPDATE`** (PostgreSQL: **`SKIP LOCKED`**) and update wallet in the **same transaction**.
 
-## نصب / آپدیت سریع با یک دستور (`scripts/quick.sh`)
+## `saka-bot` CLI (server management)
 
-روی سرور (SSH). اگر **همان پوشه قبلاً نصب شده** باشد، خودش `update.sh` را صدا می‌زند (توقف ربات → pull → pip → روشن دوباره). اگر نبود، `install.sh` را با `sudo` می‌گیرد.
+After clone, link once:
 
 ```bash
-BRANCH="main"   # یا شاخهٔ feature
+sudo chmod +x /path/to/repo/scripts/saka-bot
+sudo ln -sf /path/to/repo/scripts/saka-bot /usr/local/bin/saka-bot
+# optional: custom install path
+export SAKA_BOT_ROOT=/root/telegram-sales-bot
+```
+
+Commands (all ASCII):
+
+| Command | Description |
+|---------|-------------|
+| `saka-bot update` | Same as `scripts/update.sh` — safe git pull + pip + restart systemd |
+| `saka-bot restart` / `start` / `stop` / `status` | systemd (`SAKA_BOT_UNIT` overrides service name) |
+| `saka-bot logs` | Last 80 log lines; `saka-bot logs -f` follow |
+| `saka-bot diagnose` | Health check (no secrets printed) |
+| `sudo saka-bot db-password` | New Postgres password for role in `DATABASE_URL`; rewrites `.env` |
+| `saka-bot set-token` | Hidden prompt → updates `BOT_TOKEN` in `.env` |
+| `saka-bot set-owner` | Prompt → updates `OWNER_ID` in `.env` |
+| `saka-bot env-show` | Lists keys; masks token and DB URL |
+| `saka-bot install` | Prints first-time install examples |
+
+---
+
+## Quick install / update (`scripts/quick.sh`)
+
+On the server (SSH). If the install directory **already has** `scripts/update.sh`, it runs **`update.sh`** (stop bot → `git pull` → `pip` → restart). Otherwise it downloads **`install.sh`** with `sudo` (fresh install).
+
+**Use the branch that actually exists on GitHub** (until merged, `main` may 404 for these scripts):
+
+```bash
+BRANCH="cursor/telegram-sales-bot-security-712f"
 curl -fsSL "https://raw.githubusercontent.com/diakoronin/Telegram-Auto-Pro-Full-Activated/${BRANCH}/scripts/quick.sh" | bash -s -- "$HOME/telegram-sales-bot" "$BRANCH"
 ```
 
-- آرگومان اول: مسیر نصب (پیش‌فرض در اسکریپت: `~/telegram-sales-bot`).
-- آرگومان دوم: شاخهٔ گیت.
-- ریپوی دیگر: `REPO_URL=https://github.com/org/repo.git` قبل از `curl`.
+- First argument: install path (default in script: `~/telegram-sales-bot`).
+- Second argument: git branch name.
+- Other repo: `REPO_URL=https://github.com/org/repo.git` before `curl`.
 
-**شاخهٔ حاوی `/`** (مثل `cursor/foo`): اگر `curl` خطای ۴۰۴ داد، همان کار را بعد از `git clone` دستی از داخل پوشه با `bash scripts/update.sh` انجام دهید.
+Branches with **`/`** in the name: if `curl` returns **404**, clone that branch manually once, then from the repo folder run `bash scripts/update.sh`.
 
 ---
 
@@ -110,7 +139,7 @@ The first run creates tables and applies lightweight **additive migrations** (fo
 - **Wallet** changes always append a `wallet_transactions` row with `balance_before` / `balance_after`; balance is constrained non-negative at the DB layer.
 - **Secrets** load only from environment; the bot token is never logged by application code.
 - **Low stock**: when unused links for an active plan drop to `LOW_STOCK_THRESHOLD` or below (after a delivery, import, or delete-unused), **owner and manager** receive one Telegram alert per cycle; restocking above the threshold **re-arms** the next alert.
-- **Payment card visibility**: active card numbers are **not** shown to every user. A user must have `card_view_allowed` set by **owner or manager** (via **Admin → دسترسی کارت برای کاربر**): either **forward a message from that user** to the bot (sender must be visible) or enter their **numeric Telegram ID**, then confirm. Until then, the «شماره کارت‌ها» button is hidden and the charge flow does not append card lines. Access can be **revoked** the same way.
+- **Payment card visibility**: active card numbers are **not** shown to every user. **Owner or manager** must grant `card_view_allowed` from **Admin → “Card access for user”**: **forward a message** from that user (sender must be visible) **or** enter their **numeric Telegram ID**, then confirm. Until then the cards button is hidden and the charge success message does not list cards. Access can be **revoked** the same way.
 
 See [SECURITY.md](SECURITY.md) for the full threat model and deployment checklist.
 

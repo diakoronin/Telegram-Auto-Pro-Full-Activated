@@ -31,28 +31,28 @@ main() {
   log "INSTALL_DIR=$INSTALL_DIR  BRANCH=$BRANCH"
 
   if [[ -f "$INSTALL_DIR/scripts/update.sh" ]]; then
-    log "نسخه قبلی پیدا شد → به‌روزرسانی امن (توقف ربات، pull، pip، راه‌اندازی مجدد)"
+    log "Existing install found -> safe update (stop bot, pull, pip, restart)"
     exec bash "$INSTALL_DIR/scripts/update.sh"
   fi
 
   if [[ -d "$INSTALL_DIR/.git" ]] && [[ -f "$INSTALL_DIR/requirements.txt" ]]; then
-    log "پوشه قدیمی با git → pull و بعد update"
+    log "Git repo without update.sh -> pull then update"
     git -C "$INSTALL_DIR" fetch origin "$BRANCH" 2>/dev/null || git -C "$INSTALL_DIR" fetch origin || true
     git -C "$INSTALL_DIR" checkout "$BRANCH" 2>/dev/null || true
     git -C "$INSTALL_DIR" pull origin "$BRANCH" 2>/dev/null || git -C "$INSTALL_DIR" pull --ff-only || die "git pull failed"
     if [[ -f "$INSTALL_DIR/scripts/update.sh" ]]; then
       exec bash "$INSTALL_DIR/scripts/update.sh"
     fi
-    die "بعد از pull هنوز scripts/update.sh نیست — شاخه را عوض کنید یا دستی کلون تازه بزنید"
+    die "After pull, scripts/update.sh is still missing. Use another branch or clone fresh."
   fi
 
   if [[ -e "$INSTALL_DIR" ]] && [[ ! -d "$INSTALL_DIR/.git" ]]; then
-    die "مسیر $INSTALL_DIR وجود دارد ولی git clone نیست. آن را پاک/تغییر نام دهید یا مسیر دیگری بدهید."
+    die "Path $INSTALL_DIR exists but is not a git clone. Remove/rename it or use a different INSTALL_DIR."
   fi
 
   INSTALL_URL="$(repo_to_raw_install_url "$REPO_URL" "$BRANCH")"
-  log "نصب تازه از: $INSTALL_URL"
-  log "(نیاز به sudo و TTY برای BOT_TOKEN و OWNER_ID)"
+  log "Fresh install from: $INSTALL_URL"
+  log "(requires sudo and a TTY for BOT_TOKEN and OWNER_ID prompts)"
   curl -fsSL "$INSTALL_URL" | sudo bash -s -- "$INSTALL_DIR" "$BRANCH"
 }
 
