@@ -302,7 +302,7 @@ async def ap_sv(
 # ——— Users
 
 
-@router.message(F.text == T.BTN_USER_MGMT)
+@router.message(F.text.in_(T.BTN_USER_MGMT_ALIASES))
 async def u_menu(m: Message, session) -> None:
     if not await get_admin(session, m.from_user.id):
         return

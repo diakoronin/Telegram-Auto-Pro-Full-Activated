@@ -100,8 +100,9 @@ async def run_bot() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     dp.update.middleware(DbSessionMiddleware(factory))
     dp.update.middleware(BlockedUserMiddleware())
-    dp.include_router(user_handlers.router)
+    # Admin first: user flows (e.g. purchase) must not eat reply-keyboard button text before admin handlers
     dp.include_router(admin_handlers.router)
+    dp.include_router(user_handlers.router)
 
     tasks = [asyncio.create_task(dp.start_polling(bot))]
 

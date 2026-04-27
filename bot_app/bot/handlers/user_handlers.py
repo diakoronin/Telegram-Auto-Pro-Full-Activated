@@ -293,11 +293,17 @@ async def _open_admin_panel(message: Message, session) -> None:
 
 
 @router.message(Command("admin"))
-async def admin_command(message: Message, session):
+async def admin_command(message: Message, session, state: FSMContext):
     """Open admin panel (same as button). Owner is auto-added to admins on first bot start."""
+    await get_or_create_user(session, message.from_user)  # ensure user row for middlewares
+    await session.commit()
+    await state.clear()  # leave purchase/wallet FSM so admin reply buttons are not swallowed
     await _open_admin_panel(message, session)
 
 
 @router.message(F.text == "🛠 پنل مدیریت")
-async def admin_gate(message: Message, session):
+async def admin_gate(message: Message, session, state: FSMContext):
+    await get_or_create_user(session, message.from_user)
+    await session.commit()
+    await state.clear()
     await _open_admin_panel(message, session)

@@ -12,6 +12,12 @@ BTN_ADD_PANEL_ALIASES: tuple[str, ...] = (
     "➕افزودن پنل",
 )
 BTN_USER_MGMT = "👥 مدیریت کاربران"
+# Some Telegram clients use single-person bust (👤) instead of busts in silhouette (👥)
+BTN_USER_MGMT_ALIASES: tuple[str, ...] = (
+    "👥 مدیریت کاربران",
+    "👤 مدیریت کاربران",
+    "👤مدیریت کاربران",
+)
 BTN_FINANCE = "💰 مالی / کارت به کارت"
 BTN_EDUCATION = "📚 بخش آموزش"
 BTN_SALES = "📦 فروش و موجودی"
