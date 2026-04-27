@@ -1,7 +1,16 @@
 """Button labels and menu titles for the Telegram chat admin panel (Persian)."""
 
 # Root (after opening admin)
-BTN_ADD_PANEL = "➕ افزودن پنل"
+# Use ASCII-only prefix so Telegram never strips/normalizes a different "plus" than in code
+BTN_ADD_PANEL = "افزودن پنل"
+# What clients / old keyboards may still send (F.text must match)
+BTN_ADD_PANEL_ALIASES: tuple[str, ...] = (
+    "افزودن پنل",
+    "+ افزودن پنل",
+    "+  افزودن پنل",  # double space (some clients)
+    "➕ افزودن پنل",  # legacy
+    "➕افزودن پنل",
+)
 BTN_USER_MGMT = "👥 مدیریت کاربران"
 BTN_FINANCE = "💰 مالی / کارت به کارت"
 BTN_EDUCATION = "📚 بخش آموزش"

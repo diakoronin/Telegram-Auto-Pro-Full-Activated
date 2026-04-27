@@ -107,7 +107,7 @@ async def u_back(m: Message, session, st: FSMContext) -> None:
 # ——— Add panel
 
 
-@router.message(F.text == T.BTN_ADD_PANEL)
+@router.message(F.text.in_(T.BTN_ADD_PANEL_ALIASES))
 async def ap_menu(m: Message, session, st: FSMContext) -> None:
     if not _is_priv(await get_admin(session, m.from_user.id)):
         return await m.answer("فقط مالک/مدیر اصلی.")

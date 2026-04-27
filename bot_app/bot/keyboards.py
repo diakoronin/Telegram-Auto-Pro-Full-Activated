@@ -31,7 +31,7 @@ def admin_root_kb() -> ReplyKeyboardMarkup:
 def admin_root_menu_kb(*, manual_enabled: bool) -> ReplyKeyboardMarkup:
     """Main chat admin menu: every button maps to a handler (no empty submenu)."""
     _ = manual_enabled
-    r1 = [KeyboardButton(text=T.BTN_ADD_PANEL), KeyboardButton(text=T.BTN_USER_MGMT)]
+    r1 = [KeyboardButton(text="+ " + T.BTN_ADD_PANEL), KeyboardButton(text=T.BTN_USER_MGMT)]
     r2 = [KeyboardButton(text=T.BTN_FINANCE), KeyboardButton(text=T.BTN_EDUCATION)]
     r3 = [KeyboardButton(text=T.BTN_SALES), KeyboardButton(text=T.BTN_REPORTS)]
     r4 = [KeyboardButton(text=T.BTN_SYSTEM), KeyboardButton(text=T.BTN_BACK_MAIN)]
