@@ -11,9 +11,9 @@ BTN_SYSTEM = "⚙️ سیستم"
 BTN_BACK_MAIN = "🏠 منوی اصلی"
 BTN_BACK_ADMIN = "⬅️ پنل مدیریت"
 
-# Add panel
-BTN_TYPE_MARZBAN = "⮕ مزربن (Marzban)"
-BTN_TYPE_3XUI = "⮕ 3x-ui / Sanaei"
+# Add panel (plain labels — no fancy arrows; Telegram may normalize Unicode and break F.text==)
+BTN_TYPE_MARZBAN = "Marzban (مزربن)"
+BTN_TYPE_3XUI = "3x-ui / Sanaei"
 
 # Users
 BTN_USER_SEARCH = "🔎 جستجوی کاربر"

@@ -108,25 +108,38 @@ async def u_back(m: Message, session, st: FSMContext) -> None:
 
 
 @router.message(F.text == T.BTN_ADD_PANEL)
-async def ap_menu(m: Message, session) -> None:
+async def ap_menu(m: Message, session, st: FSMContext) -> None:
     if not _is_priv(await get_admin(session, m.from_user.id)):
         return await m.answer("فقط مالک/مدیر اصلی.")
+    # Any previous FSM (shop/wallet/…) would block the type pick handler; clear so buttons always work
+    await st.clear()
     await m.answer(
         _f("افزودن پنل — نوع؟"), reply_markup=admin_add_panel_kb()
     )
 
 
+# Optional legacy labels (old Unicode arrow prefix) from cached keyboards
+_OLDB_MZ = "⮕ مزربن (Marzban)"
+_OLDB_3X = "⮕ 3x-ui / Sanaei"
+
+
 @router.message(
-    StateFilter(None),
-    (F.text == T.BTN_TYPE_MARZBAN) | (F.text == T.BTN_TYPE_3XUI),
+    (F.text == T.BTN_TYPE_MARZBAN)
+    | (F.text == T.BTN_TYPE_3XUI)
+    | (F.text == _OLDB_MZ)
+    | (F.text == _OLDB_3X)
 )
 async def ap_type(m: Message, session, st: FSMContext) -> None:
     if not _is_priv(await get_admin(session, m.from_user.id)):
         return
-    pty = "3xui" if m.text == T.BTN_TYPE_3XUI else "marzban"
+    pty = "3xui" if m.text in (T.BTN_TYPE_3XUI, _OLDB_3X) else "marzban"
     await st.set_state(AddPanelStates.name)
     await st.update_data(pty=pty)
-    await m.answer("نام (۲–۱۰۰)؟", reply_markup=admin_cancel_row_kb())
+    lab = "3x-ui" if pty == "3xui" else "Marzban"
+    await m.answer(
+        _f(f"پنل {lab}\n\nنام داخلی (۲–۱۰۰ کاراکتر) را بفرستید:"),
+        reply_markup=admin_cancel_row_kb(),
+    )
 
 
 @router.message(AddPanelStates, F.text == T.BTN_CANCEL)
