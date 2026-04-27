@@ -245,14 +245,14 @@ async def _open_admin_panel(message: Message, session) -> None:
     if not a:
         await message.answer(format_message("دسترسی ندارید."))
         return
-    from bot_app.bot.keyboards import admin_panel_kb
+    from bot_app.bot.keyboards import admin_root_menu_kb
 
     s = get_settings()
     lines = [
         "پنل مدیریت",
         "",
-        "با دکمهٔ «باز کردن پنل مدیریت» وارد داشبورد شوید.",
-        "منوی دکمه‌های زیر همان پنل قبلی (متنی) است.",
+        "اگر مینی‌اپ (HTTPS) فعال است، دکمهٔ «باز کردن پنل مدیریت» را بزنید.",
+        "در غیر این صورت از منوی دکمه‌ای زیر در همین چت استفاده کنید.",
     ]
     if s.admin_webapp_enabled and s.webapp_entry_url and s.webapp_entry_url.startswith("https://"):
         ikb = InlineKeyboardMarkup(
@@ -266,7 +266,7 @@ async def _open_admin_panel(message: Message, session) -> None:
         )
         await message.answer(
             format_message("یا از منوی زیر استفاده کنید:"),
-            reply_markup=admin_panel_kb(s.manual_mode_enabled),
+            reply_markup=admin_root_menu_kb(manual_enabled=s.manual_mode_enabled),
         )
     elif s.admin_webapp_enabled and s.webapp_entry_url and not s.webapp_entry_url.startswith("https://"):
         await message.answer(
@@ -275,7 +275,7 @@ async def _open_admin_panel(message: Message, session) -> None:
                 "تنظیم لازم: فقط با آدرس HTTPS (برای مینی‌اپ) کار می‌کند.\n"
                 "مقدار PUBLIC_BASE_URL یا WEBAPP_PUBLIC_BASE_URL را روی https://... تنظیم کنید و nginx را به این سرور وصل کنید."
             ),
-            reply_markup=admin_panel_kb(s.manual_mode_enabled),
+            reply_markup=admin_root_menu_kb(manual_enabled=s.manual_mode_enabled),
         )
     elif s.admin_webapp_enabled and not s.webapp_entry_url:
         await message.answer(
@@ -283,12 +283,12 @@ async def _open_admin_panel(message: Message, session) -> None:
                 "پنل مدیریت (وب) فعال است اما آدرس عمومی تنظیم نشده.\n"
                 "در .env مقدار PUBLIC_BASE_URL (یا WEBAPP_PUBLIC_BASE_URL) را بگذارید."
             ),
-            reply_markup=admin_panel_kb(s.manual_mode_enabled),
+            reply_markup=admin_root_menu_kb(manual_enabled=s.manual_mode_enabled),
         )
     else:
         await message.answer(
-            format_message("پنل مدیریت (منوی دکمه‌ای)"),
-            reply_markup=admin_panel_kb(s.manual_mode_enabled),
+            format_message("پنل مدیریت (دکمه‌های چت)"),
+            reply_markup=admin_root_menu_kb(manual_enabled=s.manual_mode_enabled),
         )
 
 
