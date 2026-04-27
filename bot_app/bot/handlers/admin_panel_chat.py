@@ -96,12 +96,18 @@ async def a_back(m: Message, session, st: FSMContext) -> None:
     )
 
 
-@router.message(F.text == T.BTN_BACK_MAIN)
+@router.message(
+    (F.text == T.BTN_BACK_MAIN) | (F.text == "🏠 منوی اصلی")
+)
 async def u_back(m: Message, session, st: FSMContext) -> None:
-    if not await get_admin(session, m.from_user.id):
-        return
+    a = await get_admin(session, m.from_user.id)
     await st.clear()
-    await m.answer(_f("منوی کاربری"), reply_markup=main_user_kb())
+    if a:
+        await m.answer(_f("بازگشت به منوی کاربری"), reply_markup=main_user_kb())
+    elif m.text == "🏠 منوی اصلی":
+        # same label as user main: non-admins must not get a silent no-op when admin router is registered first
+        await m.answer(_f("منوی اصلی"), reply_markup=main_user_kb())
+    # else: unknown T.BTN_BACK_MAIN from non-admin — let other routers handle if any
 
 
 # ——— Add panel

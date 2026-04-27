@@ -23,7 +23,8 @@ BTN_EDUCATION = "📚 بخش آموزش"
 BTN_SALES = "📦 فروش و موجودی"
 BTN_REPORTS = "📊 گزارش‌ها"
 BTN_SYSTEM = "⚙️ سیستم"
-BTN_BACK_MAIN = "🏠 منوی اصلی"
+# Must differ from user main `🏠 منوی اصلی` or non-admins' home button breaks when admin router is first
+BTN_BACK_MAIN = "⬅️ منوی اصلی کاربری"
 BTN_BACK_ADMIN = "⬅️ پنل مدیریت"
 
 # Add panel (plain labels — no fancy arrows; Telegram may normalize Unicode and break F.text==)
