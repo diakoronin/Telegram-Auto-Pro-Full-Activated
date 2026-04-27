@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot_app.db.models import PanelAccount, User, UserService
+from bot_app.webapp.admin_routes import mount_admin_routes
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ def create_subscription_app(
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.state.session_factory = session_factory
     app.state.sub_base64_enabled = sub_base64_enabled
+    mount_admin_routes(app, session_factory)
 
     @app.get("/health")
     async def health():

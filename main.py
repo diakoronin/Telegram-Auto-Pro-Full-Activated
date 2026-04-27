@@ -28,11 +28,11 @@ logger = logging.getLogger(__name__)
 
 def validate_settings(s: Settings) -> None:
     if not s.bot_token or s.bot_token == "changeme":
-        raise RuntimeError("BOT_TOKEN الزامی است")
+        raise RuntimeError("BOT_TOKEN is required")
     if not s.database_url:
-        raise RuntimeError("DATABASE_URL الزامی است")
+        raise RuntimeError("DATABASE_URL is required")
     if not s.panel_credential_encryption_key or len(s.panel_credential_encryption_key) < 16:
-        raise RuntimeError("PANEL_CREDENTIAL_ENCRYPTION_KEY باید حداقل ۱۶ کاراکتر باشد")
+        raise RuntimeError("PANEL_CREDENTIAL_ENCRYPTION_KEY must be at least 16 characters")
 
 
 async def ensure_owner_admin(session_factory):

@@ -48,6 +48,12 @@ In a private chat with the bot, send **`/admin`** from the account whose numeric
 
 If the bot says you have no access, **`OWNER_ID`** does not match your account — fix it in `.env`, run **`sudo systemctl restart sakabot`**, send **`/start`**, then **`/admin`** again.
 
+### WebApp (Mini App) dashboard
+
+When **`ADMIN_WEBAPP_ENABLED=true`** and **`PUBLIC_BASE_URL`** (or **`WEBAPP_PUBLIC_BASE_URL`**) is **`https://...`**, `/admin` also sends a button **«باز کردن پنل مدیریت»** that opens the glassmorphism admin UI at `/admin-wa/`. The same FastAPI process serves subscription + admin; nginx must proxy HTTPS to port **8080** (see `docs/ADMIN_WEBAPP.md`).
+
+If HTTPS is not configured, the bot only shows the text reply keyboard (fallback).
+
 ---
 
 ## Manager CLI

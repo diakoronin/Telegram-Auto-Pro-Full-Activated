@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>پنل مدیریت — {{ brand_name }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;800&display=swap"
+    />
+    <link rel="stylesheet" href="/admin-wa/static/admin.css" />
+  </head>
+  <body data-api-base="/admin-wa" data-public-base="{{ public_base }}">
+    <div id="app">
+      <div class="topbar">
+        <h1>پنل مدیریت</h1>
+        <div class="top-actions">
+          <button type="button" class="btn" id="btn-refresh">بروزرسانی</button>
+        </div>
+      </div>
+
+      <div id="denied" style="display: none; text-align: center; padding: 32px; color: #ff6b6b">
+        <p>لطفاً از دکمه «باز کردن پنل مدیریت» داخل تلگرام این صفحه را باز کنید.</p>
+      </div>
+      <div id="loading" class="active">در حال بارگذاری…</div>
+
+      <div id="home" class="hidden">
+        <div class="stats">
+          <div class="stat">
+            <div class="label">کاربران</div>
+            <div class="value" id="st-users">—</div>
+          </div>
+          <div class="stat">
+            <div class="label">اشتراک فعال</div>
+            <div class="value" id="st-subs">—</div>
+          </div>
+          <div class="stat">
+            <div class="label">فروش امروز</div>
+            <div class="value" id="st-sales">—</div>
+          </div>
+          <div class="stat">
+            <div class="label">سرور فعال</div>
+            <div class="value" id="st-servers">—</div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">۱) فروش و موجودی</div>
+          <div class="grid-btns">
+            <button type="button" class="card-btn" data-sec="buy">خرید اشتراک <span class="badge badge-soon">بزودی</span></button>
+            <button type="button" class="card-btn" data-sec="list-sub">لیست اشتراک‌ها</button>
+            <button type="button" class="card-btn" data-sec="extend">افزایش زمان / تمدید</button>
+            <button type="button" class="card-btn" data-sec="discount">کد تخفیف</button>
+            <button type="button" class="card-btn" data-sec="plans-price">پلن‌ها و قیمت‌ها</button>
+            <button type="button" class="card-btn" data-sec="stock">موجودی سرورها</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">۲) کاربران و پرداخت</div>
+          <div class="grid-btns">
+            <button type="button" class="card-btn" data-sec="user-list">لیست کاربران</button>
+            <button type="button" class="card-btn" data-sec="user-search">جستجوی کاربر</button>
+            <button type="button" class="card-btn" data-sec="payments">پرداخت‌ها</button>
+            <button type="button" class="card-btn" data-sec="charge-manual">شارژ دستی</button>
+            <button type="button" class="card-btn" data-sec="block">مسدود / فعال‌سازی</button>
+            <button type="button" class="card-btn" data-sec="broadcast">پیام همگانی</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">۳) گزارش‌ها و مدیریت</div>
+          <div class="grid-btns">
+            <button type="button" class="card-btn" data-sec="r-sales">گزارش فروش</button>
+            <button type="button" class="card-btn" data-sec="r-users">گزارش کاربران</button>
+            <button type="button" class="card-btn" data-sec="r-subs">گزارش اشتراک‌ها</button>
+            <button type="button" class="card-btn" data-sec="manage-servers">مدیریت سرورها</button>
+            <button type="button" class="card-btn" data-sec="bot-settings">تنظیمات ربات</button>
+            <button type="button" class="card-btn" data-sec="admins">مدیریت ادمین‌ها</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">۴) تست و دیباگ</div>
+          <div class="grid-btns">
+            <button type="button" class="card-btn" data-sec="test-conn">تست اتصال</button>
+            <button type="button" class="card-btn" data-sec="sys-status">وضعیت سیستم</button>
+            <button type="button" class="card-btn" data-sec="logs">لاگ‌ها</button>
+            <button type="button" class="card-btn" data-sec="backup">بکاپ دیتابیس</button>
+            <button type="button" class="card-btn" data-sec="cache-reload">ریلود کش</button>
+            <button type="button" class="card-btn" data-sec="bot-info">اطلاعات ربات</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">۵) تنظیمات</div>
+          <div class="grid-btns">
+            <button type="button" class="card-btn" data-sec="st-general">تنظیمات عمومی</button>
+            <button type="button" class="card-btn" data-sec="st-brand">نام برند</button>
+            <button type="button" class="card-btn" data-sec="st-banners">بنرها / متن‌ها</button>
+            <button type="button" class="card-btn" data-sec="st-pay">تنظیمات پرداخت</button>
+            <button type="button" class="card-btn" data-sec="st-notif">تنظیمات نوتیفیکیشن</button>
+            <button type="button" class="card-btn" data-sec="st-panel">تنظیمات پنل‌ها / Provider</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="subview">
+        <div class="subhead">
+          <h2 id="sub-title">—</h2>
+          <button type="button" class="btn btn-primary" id="btn-home">خانه</button>
+        </div>
+        <div id="sub-body" class="placeholder-list"></div>
+      </div>
+    </div>
+    <div id="toast"></div>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="/admin-wa/static/admin.js"></script>
+  </body>
+</html>

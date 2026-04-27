@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     subscription_api_host: str = Field("127.0.0.1", alias="SUBSCRIPTION_API_HOST")
     subscription_api_port: int = Field(8080, alias="SUBSCRIPTION_API_PORT")
 
+    # Telegram Mini App: must be HTTPS in production. Defaults to PUBLIC_BASE_URL + /admin-wa/
+    admin_webapp_enabled: bool = Field(True, alias="ADMIN_WEBAPP_ENABLED")
+    webapp_public_base_url: str = Field("", alias="WEBAPP_PUBLIC_BASE_URL")
+
     @field_validator("owner_id", mode="before")
     @classmethod
     def parse_owner(cls, v):
@@ -82,6 +86,19 @@ class Settings(BaseSettings):
     @property
     def public_base_url_normalized(self) -> str:
         return self.public_base_url.rstrip("/")
+
+    @property
+    def webapp_entry_url(self) -> str:
+        """
+        Full HTTPS URL for Telegram WebApp (path /admin-wa/).
+        Uses WEBAPP_PUBLIC_BASE_URL if set, else PUBLIC_BASE_URL.
+        """
+        base = (self.webapp_public_base_url or self.public_base_url or "").strip().rstrip("/")
+        if not base:
+            return ""
+        if base.endswith("/admin-wa"):
+            return f"{base}/"
+        return f"{base}/admin-wa/"
 
 
 @lru_cache

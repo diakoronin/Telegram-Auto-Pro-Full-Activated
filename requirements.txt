@@ -14,3 +14,4 @@ jdatetime>=4.1
 pytz>=2024.1
 aiosqlite>=0.20
 slowapi>=0.1.9
+jinja2>=3.1

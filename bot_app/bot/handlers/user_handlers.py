@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -248,7 +248,48 @@ async def _open_admin_panel(message: Message, session) -> None:
     from bot_app.bot.keyboards import admin_panel_kb
 
     s = get_settings()
-    await message.answer(format_message("پنل مدیریت"), reply_markup=admin_panel_kb(s.manual_mode_enabled))
+    lines = [
+        "پنل مدیریت",
+        "",
+        "با دکمهٔ «باز کردن پنل مدیریت» وارد داشبورد شوید.",
+        "منوی دکمه‌های زیر همان پنل قبلی (متنی) است.",
+    ]
+    if s.admin_webapp_enabled and s.webapp_entry_url and s.webapp_entry_url.startswith("https://"):
+        ikb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="باز کردن پنل مدیریت", web_app=WebAppInfo(url=s.webapp_entry_url))],
+            ]
+        )
+        await message.answer(
+            format_message("\n".join(lines)),
+            reply_markup=ikb,
+        )
+        await message.answer(
+            format_message("یا از منوی زیر استفاده کنید:"),
+            reply_markup=admin_panel_kb(s.manual_mode_enabled),
+        )
+    elif s.admin_webapp_enabled and s.webapp_entry_url and not s.webapp_entry_url.startswith("https://"):
+        await message.answer(
+            format_message(
+                "پنل مدیریت (وب)\n\n"
+                "تنظیم لازم: فقط با آدرس HTTPS (برای مینی‌اپ) کار می‌کند.\n"
+                "مقدار PUBLIC_BASE_URL یا WEBAPP_PUBLIC_BASE_URL را روی https://... تنظیم کنید و nginx را به این سرور وصل کنید."
+            ),
+            reply_markup=admin_panel_kb(s.manual_mode_enabled),
+        )
+    elif s.admin_webapp_enabled and not s.webapp_entry_url:
+        await message.answer(
+            format_message(
+                "پنل مدیریت (وب) فعال است اما آدرس عمومی تنظیم نشده.\n"
+                "در .env مقدار PUBLIC_BASE_URL (یا WEBAPP_PUBLIC_BASE_URL) را بگذارید."
+            ),
+            reply_markup=admin_panel_kb(s.manual_mode_enabled),
+        )
+    else:
+        await message.answer(
+            format_message("پنل مدیریت (منوی دکمه‌ای)"),
+            reply_markup=admin_panel_kb(s.manual_mode_enabled),
+        )
 
 
 @router.message(Command("admin"))
